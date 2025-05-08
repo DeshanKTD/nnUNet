@@ -210,6 +210,7 @@ class nnUNetTrainer(object):
                 self.configuration_manager.network_arch_class_name,
                 self.configuration_manager.network_arch_init_kwargs,
                 self.configuration_manager.network_arch_init_kwargs_req_import,
+                self.configuration_manager.patch_size,
                 self.num_input_channels,
                 self.label_manager.num_segmentation_heads,
                 self.enable_deep_supervision
@@ -304,6 +305,7 @@ class nnUNetTrainer(object):
     def build_network_architecture(architecture_class_name: str,
                                    arch_init_kwargs: dict,
                                    arch_init_kwargs_req_import: Union[List[str], Tuple[str, ...]],
+                                   patch_size: Tuple[int, ...],
                                    num_input_channels: int,
                                    num_output_channels: int,
                                    enable_deep_supervision: bool = True) -> nn.Module:
