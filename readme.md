@@ -12,6 +12,26 @@ This repository contains following networks with nnUNet preprocessing and post p
 
 # Setup the environment
 
+We have to install the required packages for added networks.
+
+1. Create a virtual environment using python venv or conda. Then activate it.
+2. Install pytorch 2.0.1 
+    - This specifica version used because to match the versions of U-mamba dependancies.
+    - ```pip install torch==2.0.1 torchvision==0.15.2```
+3. Install mamba packages - [Mamba](https://pypi.org/project/mamba-ssm/)
+    - ```pip install mamba-ssm```
+    - This needs causal-conv1d>=1.4.0 or higher for better performance. Check the link for installation guide.
+4. Install Monai. Monai will provide some networks needed.
+    - ```pip install monai```
+5. Install nnUNet.
+    -     
+    ```
+    git clone https://github.com/DeshanKTD/nnUNet
+    cd nnUNet
+    pip install -e .
+    ```
+
+
 
 For running the respective commands, visit the nnUNet documenation ([nnUNet documentation](https://github.com/MIC-DKFZ/nnUNet))
 
@@ -19,5 +39,5 @@ For running the respective commands, visit the nnUNet documenation ([nnUNet docu
 # What will change with introduced network architectures
 nnUNetv2 uses Residual Encoder UNet (ResEncUNet) as the backbone network for the segmentation. So its current experiment planners optimizes the parameters in this ResEncUNet. 
 
-However, we haven't written experimen planners for the each type of network. So it just uses the preprocessed images from the preprocessing pipeline as inputs. If you want to do the optimizations for the network, you have to write your own experiment planner. But the easiest hack is to directly, change the parameters in the trainer. 
+However, we haven't written experiment planners for the each type of network. So it just uses the preprocessed images from the preprocessing pipeline as inputs. If you want to do the optimizations for the network, you have to write your own experiment planner. But the easiest hack is to directly, change the parameters in the trainer. 
 
