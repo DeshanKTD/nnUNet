@@ -14,9 +14,12 @@ from monai.networks.nets import VNet
 
 
 class nnUNetTrainerVNet(nnUNetTrainerNoDeepSupervision):
-    def __init__(self, plans: dict, configuration: str, fold: int, dataset_json: dict, unpack_dataset: bool = True,
+    def __init__(self, plans: dict, configuration: str, fold: int, dataset_json: dict,
                  device: torch.device = torch.device('cuda')):
-        super().__init__(plans, configuration, fold, dataset_json, unpack_dataset, device)
+    # def __init__(self, plans: dict, configuration: str, fold: int, dataset_json: dict, unpack_dataset: bool = True,
+    #              device: torch.device = torch.device('cuda')):
+        # super().__init__(plans, configuration, fold, dataset_json, unpack_dataset, device)
+        super().__init__(plans, configuration, fold, dataset_json, device)
         
         self.initial_lr = 1e-4
         self.grad_scaler = None
