@@ -17,7 +17,7 @@ class nnUNetTrainerVNet(nnUNetTrainerCustomSeg):
                  device: torch.device = torch.device('cuda')):
         super().__init__(plans, configuration, fold, dataset_json, device)
         
-        self.initial_lr = 1e-2
+        self.initial_lr = 1e-4
         self.grad_scaler = None
         self.weight_decay = 0.01
         self.num_epochs = 400
