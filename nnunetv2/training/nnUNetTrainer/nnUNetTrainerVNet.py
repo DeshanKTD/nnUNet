@@ -22,7 +22,7 @@ class nnUNetTrainerVNet(nnUNetTrainerNoDeepSupervision):
         self.grad_scaler = None
         self.weight_decay = 0.01
         self.num_epochs = 400
-        self.loss = DC_and_CE_loss({'batch_dice': self.batch_dice, 'smooth': 0, 'do_bg': False}, {})
+        self.loss = DC_and_CE_loss({'batch_dice': True, 'smooth': 0, 'do_bg': False}, {})
 
     @staticmethod
     def build_network_architecture(architecture_class_name: str,
