@@ -1,4 +1,5 @@
 from nnunetv2.nets.UNetPlusPlus import BasicUNetPlusPlus
+from nnunetv2.training import nnUNetTrainer
 from nnunetv2.training.lr_scheduler.polylr import PolyLRScheduler
 from nnunetv2.training.nnUNetTrainer.variants.custom import nnUNetTrainerCustomSeg
 from nnunetv2.utilities.plans_handling.plans_handler import ConfigurationManager, PlansManager
@@ -12,7 +13,7 @@ from torch import nn
 from monai.networks.nets import VNet
 
 
-class nnUNetTrainerVNet(nnUNetTrainerCustomSeg):
+class nnUNetTrainerVNet(nnUNetTrainer):
     def __init__(self, plans: dict, configuration: str, fold: int, dataset_json: dict,
                  device: torch.device = torch.device('cuda')):
         super().__init__(plans, configuration, fold, dataset_json, device)
