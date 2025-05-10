@@ -1,7 +1,6 @@
 from nnunetv2.nets.UNetPlusPlus import BasicUNetPlusPlus
-from nnunetv2.training.nnUNetTrainer.variants.network_architecture.nnUNetTrainerNoDeepSupervision import \
-    nnUNetTrainerNoDeepSupervision
 from nnunetv2.training.lr_scheduler.polylr import PolyLRScheduler
+from nnunetv2.training.nnUNetTrainer.variants.custom import nnUNetTrainerCustomSeg
 from nnunetv2.utilities.plans_handling.plans_handler import ConfigurationManager, PlansManager
 from nnunetv2.training.loss.dice import get_tp_fp_fn_tn
 from typing import Tuple, Union, List
@@ -13,12 +12,9 @@ from torch import nn
 from monai.networks.nets import VNet
 
 
-class nnUNetTrainerVNet(nnUNetTrainerNoDeepSupervision):
+class nnUNetTrainerVNet(nnUNetTrainerCustomSeg):
     def __init__(self, plans: dict, configuration: str, fold: int, dataset_json: dict,
                  device: torch.device = torch.device('cuda')):
-    # def __init__(self, plans: dict, configuration: str, fold: int, dataset_json: dict, unpack_dataset: bool = True,
-    #              device: torch.device = torch.device('cuda')):
-        # super().__init__(plans, configuration, fold, dataset_json, unpack_dataset, device)
         super().__init__(plans, configuration, fold, dataset_json, device)
         
         self.initial_lr = 1e-2
@@ -27,11 +23,6 @@ class nnUNetTrainerVNet(nnUNetTrainerNoDeepSupervision):
         self.num_epochs = 400
 
     @staticmethod
-    # def build_network_architecture(plans_manager: PlansManager,
-    #                                dataset_json,
-    #                                configuration_manager: ConfigurationManager,
-    #                                num_input_channels,
-    #                                enable_deep_supervision: bool = False) -> nn.Module:
     def build_network_architecture(architecture_class_name: str,
                                    arch_init_kwargs: dict,
                                    arch_init_kwargs_req_import: Union[List[str], Tuple[str, ...]],

@@ -7,13 +7,15 @@ from nnunetv2.training.loss.dice import get_tp_fp_fn_tn
 import torch
 from torch.optim import AdamW
 from torch import nn
+from typing import Tuple, Union, List
+
 
 from monai.networks.nets import UNETR
 
 class nnUNetTrainerUNETR(nnUNetTrainerNoDeepSupervision):
-    def __init__(self, plans: dict, configuration: str, fold: int, dataset_json: dict, unpack_dataset: bool = True,
+    def __init__(self, plans: dict, configuration: str, fold: int, dataset_json: dict,
                  device: torch.device = torch.device('cuda')):
-        super().__init__(plans, configuration, fold, dataset_json, unpack_dataset, device)
+        super().__init__(plans, configuration, fold, dataset_json, device)
         original_patch_size = self.configuration_manager.patch_size
         new_patch_size = [-1] * len(original_patch_size)
         for i in range(len(original_patch_size)):
@@ -31,18 +33,18 @@ class nnUNetTrainerUNETR(nnUNetTrainerNoDeepSupervision):
         self.weight_decay = 0.01
 
     @staticmethod
-    def build_network_architecture(plans_manager: PlansManager,
-                                   dataset_json,
-                                   configuration_manager: ConfigurationManager,
-                                   num_input_channels,
+    def build_network_architecture(architecture_class_name: str,
+                                   arch_init_kwargs: dict,
+                                   arch_init_kwargs_req_import: Union[List[str], Tuple[str, ...]],
+                                   patch_size: Tuple[int, ...],
+                                   num_input_channels: int,
+                                   num_output_channels: int,
                                    enable_deep_supervision: bool = False) -> nn.Module:
-
-        label_manager = plans_manager.get_label_manager(dataset_json)
 
         model = UNETR(
             in_channels = num_input_channels,
-            out_channels = label_manager.num_segmentation_heads,
-            img_size = configuration_manager.patch_size,
+            out_channels = num_output_channels,
+            img_size = patch_size,
             feature_size=16,
             hidden_size=768,
             mlp_dim = 3072,
@@ -51,7 +53,7 @@ class nnUNetTrainerUNETR(nnUNetTrainerNoDeepSupervision):
             norm_name="instance",
             res_block=True,
             dropout_rate=0.0,
-            spatial_dims = len(configuration_manager.patch_size),
+            spatial_dims = len(patch_size),
             qkv_bias = False,
             save_attn = False,
         )
