@@ -1,7 +1,8 @@
 from nnunetv2.nets.UNetPlusPlus import BasicUNetPlusPlus
 from nnunetv2.training import nnUNetTrainer
+from nnunetv2.training.loss.compound_losses import DC_and_CE_loss
 from nnunetv2.training.lr_scheduler.polylr import PolyLRScheduler
-from nnunetv2.training.nnUNetTrainer.variants.custom import nnUNetTrainerCustomSeg
+from nnunetv2.training.nnUNetTrainer.variants.network_architecture.nnUNetTrainerNoDeepSupervision import nnUNetTrainerNoDeepSupervision
 from nnunetv2.utilities.plans_handling.plans_handler import ConfigurationManager, PlansManager
 from nnunetv2.training.loss.dice import get_tp_fp_fn_tn
 from typing import Tuple, Union, List
@@ -12,8 +13,7 @@ from torch import nn
 
 from monai.networks.nets import VNet
 
-
-class nnUNetTrainerVNet(nnUNetTrainer):
+class nnUNetTrainerVNet(nnUNetTrainerNoDeepSupervision):
     def __init__(self, plans: dict, configuration: str, fold: int, dataset_json: dict,
                  device: torch.device = torch.device('cuda')):
         super().__init__(plans, configuration, fold, dataset_json, device)
@@ -22,6 +22,7 @@ class nnUNetTrainerVNet(nnUNetTrainer):
         self.grad_scaler = None
         self.weight_decay = 0.01
         self.num_epochs = 400
+        self.loss = DC_and_CE_loss({'batch_dice': self.batch_dice, 'smooth': 0, 'do_bg': False}, {})
 
     @staticmethod
     def build_network_architecture(architecture_class_name: str,
