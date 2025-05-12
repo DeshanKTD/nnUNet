@@ -6,6 +6,7 @@ import torch
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch import nn
+from typing import Tuple, Union, List
 
 from monai.networks.nets import SwinUNETR
 
@@ -13,9 +14,9 @@ class nnUNetTrainerSwinUNETR(nnUNetTrainerNoDeepSupervision):
     """
     Swin-UNETR default configuration
     """
-    def __init__(self, plans: dict, configuration: str, fold: int, dataset_json: dict, unpack_dataset: bool = True,
+    def __init__(self, plans: dict, configuration: str, fold: int, dataset_json: dict,
                  device: torch.device = torch.device('cuda')):
-        super().__init__(plans, configuration, fold, dataset_json, unpack_dataset, device)
+        super().__init__(plans, configuration, fold, dataset_json, device)
         original_patch_size = self.configuration_manager.patch_size
         new_patch_size = [-1] * len(original_patch_size)
         for i in range(len(original_patch_size)):
@@ -31,21 +32,23 @@ class nnUNetTrainerSwinUNETR(nnUNetTrainerNoDeepSupervision):
         self.initial_lr = 8e-4
         self.weight_decay = 0.01
         self.num_epochs = 300
+        
     @staticmethod
-    def build_network_architecture(plans_manager: PlansManager,
-                                   dataset_json,
-                                   configuration_manager: ConfigurationManager,
-                                   num_input_channels,
+    def build_network_architecture(architecture_class_name: str,
+                                   arch_init_kwargs: dict,
+                                   arch_init_kwargs_req_import: Union[List[str], Tuple[str, ...]],
+                                   patch_size: Tuple[int, ...],
+                                   num_input_channels: int,
+                                   num_output_channels: int,
                                    enable_deep_supervision: bool = False) -> nn.Module:
 
-        label_manager = plans_manager.get_label_manager(dataset_json)
-        img_size = configuration_manager.patch_size
-        spatial_dims = len(img_size)
+
+        spatial_dims = len(patch_size)
 
         model = SwinUNETR(
             in_channels = num_input_channels,
-            out_channels = label_manager.num_segmentation_heads,
-            img_size = img_size,
+            out_channels = num_output_channels,
+            img_size = patch_size,
             num_heads = (3, 6, 12, 24),
             norm_name = "instance",
             drop_rate = 0.0,

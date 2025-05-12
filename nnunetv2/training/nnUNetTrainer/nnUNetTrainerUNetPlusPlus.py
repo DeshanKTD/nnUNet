@@ -1,63 +1,47 @@
+from nnunetv2.nets.UNetPlusPlus import BasicUNetPlusPlus
 from nnunetv2.training.nnUNetTrainer.variants.network_architecture.nnUNetTrainerNoDeepSupervision import \
     nnUNetTrainerNoDeepSupervision
+from nnunetv2.training.lr_scheduler.polylr import PolyLRScheduler
 from nnunetv2.utilities.plans_handling.plans_handler import ConfigurationManager, PlansManager
 from nnunetv2.training.loss.dice import get_tp_fp_fn_tn
+from typing import Tuple, Union, List
+
 import torch
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch import nn
 
-from monai.networks.nets import SwinUNETR
 
-class nnUNetTrainerSwinUNETR_Tiny(nnUNetTrainerNoDeepSupervision):
-    """
-    Using Swin-Tranformer's Tiny backbone configuration.
-    """
-    def __init__(self, plans: dict, configuration: str, fold: int, dataset_json: dict, unpack_dataset: bool = True,
+
+class nnUNetTrainerUNetPlusPlus(nnUNetTrainerNoDeepSupervision):
+    def __init__(self, plans: dict, configuration: str, fold: int, dataset_json: dict,
                  device: torch.device = torch.device('cuda')):
-        super().__init__(plans, configuration, fold, dataset_json, unpack_dataset, device)
-        original_patch_size = self.configuration_manager.patch_size
-        new_patch_size = [-1] * len(original_patch_size)
-        for i in range(len(original_patch_size)):
-            if (original_patch_size[i] / 2**5) < 1 or ((original_patch_size[i] / 2**5) % 1) != 0:
-                new_patch_size[i] = round(original_patch_size[i] / 2**5 + 0.5) * 2**5
-            else:
-                new_patch_size[i] = original_patch_size[i]
-        self.configuration_manager.configuration['patch_size'] = new_patch_size
-        self.print_to_log_file("Patch size changed from {} to {}".format(original_patch_size, new_patch_size))
-        self.plans_manager.plans['configurations'][self.configuration_name]['patch_size'] = new_patch_size
-
+        super().__init__(plans, configuration, fold, dataset_json, device)
+        
+        self.initial_lr = 1e-4
         self.grad_scaler = None
-        self.initial_lr = 8e-4
         self.weight_decay = 0.01
+        self.num_epochs = 10
 
     @staticmethod
-    def build_network_architecture(plans_manager: PlansManager,
-                                   dataset_json,
-                                   configuration_manager: ConfigurationManager,
-                                   num_input_channels,
+    def build_network_architecture(architecture_class_name: str,
+                                   arch_init_kwargs: dict,
+                                   arch_init_kwargs_req_import: Union[List[str], Tuple[str, ...]],
+                                   patch_size: Tuple[int, ...],
+                                   num_input_channels: int,
+                                   num_output_channels: int,
                                    enable_deep_supervision: bool = False) -> nn.Module:
 
-        label_manager = plans_manager.get_label_manager(dataset_json)
-        img_size = configuration_manager.patch_size
-        spatial_dims = len(img_size)
-
-        model = SwinUNETR(
+        model = BasicUNetPlusPlus(
+            spatial_dims = len(patch_size),
             in_channels = num_input_channels,
-            out_channels = label_manager.num_segmentation_heads,
-            img_size = img_size,
-            num_heads = (3, 6, 12, 24),
-            norm_name = "instance",
-            drop_rate = 0.0,
-            attn_drop_rate = 0.0,
-            dropout_path_rate = 0.0,
-            normalize = True,
-            use_checkpoint = False,
-            spatial_dims = spatial_dims,
-            downsample = "merging",
-            use_v2 = False,
-            depths = (2, 2, 6, 2),
-            feature_size = 96
+            out_channels = num_output_channels,
+            features =  (32,32,64,128,256,32),
+            deep_supervision= False, # enable_deep_supervision,
+            dropout = 0.0,
+            upsample = 'deconv',
+            act=('LeakyReLU', {'inplace': True, 'negative_slope': 0.1}),
+            norm = ('instance', {'affine': True}),
+            bias = True
         )
 
         return model
@@ -74,7 +58,7 @@ class nnUNetTrainerSwinUNETR_Tiny(nnUNetTrainerNoDeepSupervision):
 
         self.optimizer.zero_grad(set_to_none=True)
         
-        output = self.network(data)
+        output = self.network(data) #Unet plus plus outputs a list, since we are not using deep supervision, we only take the first element
         l = self.loss(output, target)
         l.backward()
         torch.nn.utils.clip_grad_norm_(self.network.parameters(), 12)
@@ -95,11 +79,7 @@ class nnUNetTrainerSwinUNETR_Tiny(nnUNetTrainerNoDeepSupervision):
 
         self.optimizer.zero_grad(set_to_none=True)
 
-        # Autocast is a little bitch.
-        # If the device_type is 'cpu' then it's slow as heck and needs to be disabled.
-        # If the device_type is 'mps' then it will complain that mps is not implemented, even if enabled=False is set. Whyyyyyyy. (this is why we don't make use of enabled=False)
-        # So autocast will only be active if we have a cuda device.
-        output = self.network(data)
+        output = self.network(data)  #Unet plus plus outputs a list, since we are not using deep supervision, we only take the first element
         del data
         l = self.loss(output, target)
 
@@ -146,7 +126,7 @@ class nnUNetTrainerSwinUNETR_Tiny(nnUNetTrainerNoDeepSupervision):
     def configure_optimizers(self):
 
         optimizer = AdamW(self.network.parameters(), lr=self.initial_lr, weight_decay=self.weight_decay, eps=1e-5)
-        scheduler = CosineAnnealingLR(optimizer, T_max=self.num_epochs, eta_min=1e-6)
+        scheduler = PolyLRScheduler(optimizer, self.initial_lr, self.num_epochs, exponent=1.0)
 
         self.print_to_log_file(f"Using optimizer {optimizer}")
         self.print_to_log_file(f"Using scheduler {scheduler}")
@@ -155,3 +135,4 @@ class nnUNetTrainerSwinUNETR_Tiny(nnUNetTrainerNoDeepSupervision):
     
     def set_deep_supervision_enabled(self, enabled: bool):
         pass
+    

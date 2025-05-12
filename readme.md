@@ -2,13 +2,13 @@
 
 This repository contains following networks with nnUNet preprocessing and post processing pipelines. 
 
-1. [nnUNet](https://github.com/MIC-DKFZ/nnUNet)
-2. [SwinUNETR](https://docs.monai.io/en/1.3.0/_modules/monai/networks/nets/swin_unetr.html)
-3. [UNet++](https://docs.monai.io/en/stable/networks.html#basicunetplusplus)
-4. [VNet](https://docs.monai.io/en/stable/networks.html#vnet)
-5. [U-mamba](https://github.com/bowang-lab/U-Mamba)
-6. [CoTr](https://github.com/YtongXie/CoTr/tree/main)
-7. [UNETR](https://docs.monai.io/en/0.7.0/_modules/monai/networks/nets/unetr.html)
+1. [x] [nnUNet](https://github.com/MIC-DKFZ/nnUNet)
+2. [x] [SwinUNETR](https://docs.monai.io/en/1.3.0/_modules/monai/networks/nets/swin_unetr.html)
+3. [x] [UNet++](https://docs.monai.io/en/stable/networks.html#basicunetplusplus)
+4. [x] [VNet](https://docs.monai.io/en/stable/networks.html#vnet)
+5. [ ] [U-mamba](https://github.com/bowang-lab/U-Mamba)
+6. [ ] [CoTr](https://github.com/YtongXie/CoTr/tree/main)
+7. [x] [UNETR](https://docs.monai.io/en/0.7.0/_modules/monai/networks/nets/unetr.html)
 
 # Setup the environment
 
