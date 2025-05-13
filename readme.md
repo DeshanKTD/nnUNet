@@ -7,7 +7,7 @@ This repository contains following networks with nnUNet preprocessing and post p
 3. [x] [UNet++](https://docs.monai.io/en/stable/networks.html#basicunetplusplus)
 4. [x] [VNet](https://docs.monai.io/en/stable/networks.html#vnet)
 5. [ ] [U-mamba](https://github.com/bowang-lab/U-Mamba)
-6. [ ] [CoTr](https://github.com/YtongXie/CoTr/tree/main)
+6. [x] [CoTr](https://github.com/YtongXie/CoTr/tree/main)
 7. [x] [UNETR](https://docs.monai.io/en/0.7.0/_modules/monai/networks/nets/unetr.html)
 
 # Setup the environment
