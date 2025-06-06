@@ -5,8 +5,10 @@ import torch.nn as nn
 from torch import distributed as dist
 from network_architectures.networks.unet.se_unet.se_unet_3d import SEUNet3D
 from network_architectures.networks.gan.basic.discriminator import Discriminator3D
+from batchgenerators.utilities.file_and_folder_operations import join, load_json, isfile, save_json, maybe_mkdir_p
 from typing import List, Tuple, Union
 import numpy as np
+from time import time, sleep
 
 from nnunetv2.training.dataloading.nnunet_dataset import infer_dataset_class
 from nnunetv2.training.loss.dice import get_tp_fp_fn_tn
@@ -25,10 +27,13 @@ class nnUNetTrainerGAN(nnUNetTrainerNoDeepSupervision):
         self.initial_dlr = 1e-4
         self.grad_scaler = None
         self.weight_decay = 0.01
-        self.num_epochs = 10
+        self.num_epochs = 1000
         self.lambda_adv = 0.01  # You can tune this
+        self.configuration_manager.configuration['patch_size'] = [128,128,128]
         
-        def initialize(self):
+        
+    def initialize(self):
+            print('......... on initialiaze .........................')
             if not self.was_initialized:
                 ## DDP batch size and oversampling can differ between workers and needs adaptation
                 # we need to change the batch size in DDP because we don't use any of those distributed samplers
@@ -53,7 +58,7 @@ class nnUNetTrainerGAN(nnUNetTrainerNoDeepSupervision):
                     self.print_to_log_file('Using torch.compile...')
                     self.network = torch.compile(self.network)
 
-                self.optimizer, self.lr_scheduler, self.optimzer_d = self.configure_optimizers()
+                self.optimizer, self.lr_scheduler, self.optimizer_d, self.dlr_scheudler = self.configure_optimizers()
                 # if ddp, wrap in DDP wrapper
                 if self.is_ddp:
                     self.network = torch.nn.SyncBatchNorm.convert_sync_batchnorm(self.network)
@@ -81,9 +86,9 @@ class nnUNetTrainerGAN(nnUNetTrainerNoDeepSupervision):
                                    num_output_channels: int,
                                    enable_deep_supervision: bool = False) -> nn.Module:
 
-
-        generator = SEUNet3D(in_channels=num_input_channels,out_channels=num_output_channels)
-        discriminator = Discriminator3D(in_channels=num_output_channels, base_features=16)
+        print("number of output channels: ", num_output_channels)
+        generator = SEUNet3D(in_channels=num_input_channels,out_channels=num_output_channels,feature_channels=[8, 16, 32, 64])
+        discriminator = Discriminator3D(in_channels=num_output_channels+1, base_features=16)
         
         return generator, discriminator
     
@@ -93,12 +98,14 @@ class nnUNetTrainerGAN(nnUNetTrainerNoDeepSupervision):
         lr_scheduler = PolyLRScheduler(optimizer, self.initial_lr, self.num_epochs)
         #TODO - Use a scheduler 
         optimizer_d = torch.optim.Adam(self.discriminator.parameters(),self.initial_dlr)
+        dlr_scheudler = PolyLRScheduler(optimizer_d, self.initial_dlr, self.num_epochs)
         
-        return optimizer, lr_scheduler, optimizer_d
+        return optimizer, lr_scheduler, optimizer_d, dlr_scheudler
     
     def on_train_epoch_start(self):
         # self.network.train()
-        # self.lr_scheduler.step(self.current_epoch)
+        self.lr_scheduler.step(self.current_epoch)
+        self.dlr_scheudler.step(self.current_epoch)
         self.print_to_log_file('')
         self.print_to_log_file(f'Epoch {self.current_epoch}')
         self.print_to_log_file(
@@ -117,30 +124,46 @@ class nnUNetTrainerGAN(nnUNetTrainerNoDeepSupervision):
         # ====================================================
         # 1. Train Discriminator
         # ====================================================
+        
+        # set generator to eval and discriminator to train
         self.network.eval()
         self.discriminator.train()
+        
+        # get the network output
         with torch.no_grad():
             fake_mask = self.network(data)
-            
-        real_pair = torch.cat([data, target], dim=1)
+        
+        # generally target is not one hot encoded. Convert it to one hot encoding
+        if fake_mask.shape == target.shape:
+            # if this is the case then gt is probably already a one hot encoding
+            target_onehot = target
+        else:
+            target_onehot = torch.zeros(fake_mask.shape, device=fake_mask.device, dtype=torch.bool)
+            target_onehot.scatter_(1, target.long(), 1)
+        
+        # Create the image and output pair for the discriminator
+        real_pair = torch.cat([data, target_onehot], dim=1)
         fake_pair = torch.cat([data, fake_mask], dim=1)
         
-        real_labels = torch.ones_like(self.discriminator(real_pair))
-        fake_labels = torch.zeros_like(self.discriminator(fake_pair))
-        
+        # get discriminaotr output for real and fake pair
         d_real = self.discriminator(real_pair)
         d_fake = self.discriminator(fake_pair)
         
+        # genereate targets for real and fake pair outputs from the discriminator
+        real_labels = torch.ones_like(d_real)
+        fake_labels = torch.zeros_like(d_fake)
+        
+        # calculate the loss with the ouput and target
         d_loss_real = self.bce_loss(d_real,real_labels)
         d_loss_fake = self.bce_loss(d_fake, fake_labels)
         
         d_loss = (d_loss_real+d_loss_fake)/2
         
-                # Handle Optimizers
-        
+        # Handle Optimizers
+        # loss backwards 
         self.optimizer_d.zero_grad()
         d_loss.backward()
-        self.optmizer_d.step()
+        self.optimizer_d.step()
         
 
         
@@ -148,17 +171,27 @@ class nnUNetTrainerGAN(nnUNetTrainerNoDeepSupervision):
         # 2. Train Generator
         # ====================================================
         
+        # set generator to train and discriminator to eval
         self.network.train()
         self.discriminator.eval()
         
+        # In here target automatically handles by nnUNet
         fake_mask = self.network(data)
-        # segmentation loss
+        
+        # get segmentation loss
         seg_loss = self.loss(fake_mask,target)
         
+        # Generate fake pair
         fake_pair = torch.cat([data, fake_mask], dim=1)
-        pred_fake = self.discriminator(fake_pair)
+        # Get discriminator output
+        with torch.no_grad():
+            pred_fake = self.discriminator(fake_pair)
+        
+        # Get adversarial loss --> forcing generator to predict ones for fake pair
         adv_loss = self.bce_loss(pred_fake, torch.ones_like(pred_fake))
         
+        # Compound loss
+        # TODO - Check loss
         g_loss = seg_loss + self.lambda_adv * adv_loss
         
         # Handle Optimizers
@@ -170,7 +203,7 @@ class nnUNetTrainerGAN(nnUNetTrainerNoDeepSupervision):
         
     def on_train_epoch_end(self, train_outputs: List[dict]):
         outputs = collate_outputs(train_outputs)
-
+        
         if self.is_ddp:
             losses_tr = [None for _ in range(dist.get_world_size())]
             dist.all_gather_object(losses_tr, outputs['loss'])
@@ -179,7 +212,9 @@ class nnUNetTrainerGAN(nnUNetTrainerNoDeepSupervision):
             loss_here = np.mean(outputs['loss'])
             dloss_here = np.mean(outputs['dloss'])
 
-        self.logger.log(f'generator loss: {loss_here}, discriminator loss: {dloss_here}, epoch: {self.current_epoch}')
+        # self.logger.log(f'generator loss: {loss_here}, discriminator loss: {dloss_here}, epoch: {self.current_epoch}')
+        self.logger.log('train_losses', loss_here, self.current_epoch)
+        self.logger.log('disc_losses', dloss_here, self.current_epoch)
         
     def on_validation_epoch_start(self):
         self.network.eval()
@@ -199,18 +234,46 @@ class nnUNetTrainerGAN(nnUNetTrainerNoDeepSupervision):
         # If the device_type is 'cpu' then it's slow as heck and needs to be disabled.
         # If the device_type is 'mps' then it will complain that mps is not implemented, even if enabled=False is set. Whyyyyyyy. (this is why we don't make use of enabled=False)
         # So autocast will only be active if we have a cuda device.
-        with autocast(self.device.type, enabled=True) if self.device.type == 'cuda' else dummy_context():
-            output = self.network(data)
-            real_pair = torch.cat([data,target], dim=1),
-            fake_pair = torch.cat([data, output], dim=1)
+        # with autocast(self.device.type, enabled=True) if self.device.type == 'cuda' else dummy_context():
+        output = self.network(data)
             
-            douput = self.dicriminator(fake_pair)
-            routput = self.dicriminator(real_pair)
+        if torch.isnan(output).any() or torch.isinf(output).any():
+            raise ValueError("Output contains NaN or Inf values")
+        
+        if torch.isnan(target).any() or torch.isinf(target).any():
+            raise ValueError("Target contains NaN or Inf values")
             
-            del data
-            l = self.loss(output, target)
-            dl = self.bce_loss(douput,routput)
-            
+        # generally target is not one hot encoded. Convert it to one hot encoding
+        if output.shape == target.shape:
+            # if this is the case then gt is probably already a one hot encoding
+            target_onehot = target
+        else:
+            target_onehot = torch.zeros(output.shape, device=output.device, dtype=torch.bool)
+            target_onehot.scatter_(1, target.long(), 1)
+        
+        real_pair = torch.cat([data,target_onehot], dim=1)
+        fake_pair = torch.cat([data, output], dim=1)
+        
+        douput = self.discriminator(fake_pair)
+        routput = self.discriminator(real_pair)
+        
+        del data
+        
+        
+        # target = target.long()
+        # if target.shape[1] == 1:
+        #     target = target[:, 0]
+
+        # output = output.float() 
+
+        l = self.loss(output, target)
+        dl = self.bce_loss(douput,routput)
+        
+        # print("Loss fn:", self.loss)
+        # print("Output dtype/shape/min/max:", output.dtype, output.shape, output.min().item(), output.max().item())
+        # print("Target dtype/shape/min/max:", target.dtype, target.shape, target.min().item(), target.max().item())
+        
+        # print('val seg loss -----', l)
 
         # we only need the output with the highest output resolution (if DS enabled)
         if self.enable_deep_supervision:
@@ -228,21 +291,7 @@ class nnUNetTrainerGAN(nnUNetTrainerNoDeepSupervision):
             predicted_segmentation_onehot = torch.zeros(output.shape, device=output.device, dtype=torch.float32)
             predicted_segmentation_onehot.scatter_(1, output_seg, 1)
             del output_seg
-
-        if self.label_manager.has_ignore_label:
-            if not self.label_manager.has_regions:
-                mask = (target != self.label_manager.ignore_label).float()
-                # CAREFUL that you don't rely on target after this line!
-                target[target == self.label_manager.ignore_label] = 0
-            else:
-                if target.dtype == torch.bool:
-                    mask = ~target[:, -1:]
-                else:
-                    mask = 1 - target[:, -1:]
-                # CAREFUL that you don't rely on target after this line!
-                target = target[:, :-1]
-        else:
-            mask = None
+        mask=None
 
         tp, fp, fn, _ = get_tp_fp_fn_tn(predicted_segmentation_onehot, target, axes=axes, mask=mask)
 
@@ -258,4 +307,50 @@ class nnUNetTrainerGAN(nnUNetTrainerNoDeepSupervision):
             fp_hard = fp_hard[1:]
             fn_hard = fn_hard[1:]
 
-        return {'generator loss': l.detach().cpu().numpy(), 'discriminator loss': dl.detach().cpu().numpy(),'tp_hard': tp_hard, 'fp_hard': fp_hard, 'fn_hard': fn_hard}
+        # TODO - Discriminator loss is not showing
+        return {'loss': l.detach().cpu().numpy(), 'dloss': dl.detach().cpu().numpy(),'tp_hard': tp_hard, 'fp_hard': fp_hard, 'fn_hard': fn_hard}
+    
+    def on_validation_epoch_end(self, val_outputs: List[dict]):
+        outputs_collated = collate_outputs(val_outputs)
+        tp = np.sum(outputs_collated['tp_hard'], 0)
+        fp = np.sum(outputs_collated['fp_hard'], 0)
+        fn = np.sum(outputs_collated['fn_hard'], 0)
+
+        
+        loss_here = np.mean(outputs_collated['loss'])
+        dloss_here = np.mean(outputs_collated['dloss'])
+
+        global_dc_per_class = [i for i in [2 * i / (2 * i + j + k) for i, j, k in zip(tp, fp, fn)]]
+        mean_fg_dice = np.nanmean(global_dc_per_class)
+        self.logger.log('mean_fg_dice', mean_fg_dice, self.current_epoch)
+        self.logger.log('dice_per_class_or_region', global_dc_per_class, self.current_epoch)
+        self.logger.log('val_losses', loss_here, self.current_epoch)
+        self.logger.log('val_disc_losses',dloss_here,self.current_epoch)
+        
+    def on_epoch_end(self):
+        self.logger.log('epoch_end_timestamps', time(), self.current_epoch)
+
+        self.print_to_log_file('generator train_loss', np.round(self.logger.my_fantastic_logging['train_losses'][-1], decimals=4))
+        self.print_to_log_file('discriminator train_loss', np.round(self.logger.my_fantastic_logging['disc_losses'][-1], decimals=4))
+        self.print_to_log_file('generator val_loss', np.round(self.logger.my_fantastic_logging['val_losses'][-1], decimals=4))
+        self.print_to_log_file('discriminator val_loss', np.round(self.logger.my_fantastic_logging['val_disc_losses'][-1], decimals=4))
+        self.print_to_log_file('Pseudo dice', [np.round(i, decimals=4) for i in
+                                               self.logger.my_fantastic_logging['dice_per_class_or_region'][-1]])
+        self.print_to_log_file(
+            f"Epoch time: {np.round(self.logger.my_fantastic_logging['epoch_end_timestamps'][-1] - self.logger.my_fantastic_logging['epoch_start_timestamps'][-1], decimals=2)} s")
+
+        # handling periodic checkpointing
+        current_epoch = self.current_epoch
+        if (current_epoch + 1) % self.save_every == 0 and current_epoch != (self.num_epochs - 1):
+            self.save_checkpoint(join(self.output_folder, 'checkpoint_latest.pth'))
+
+        # handle 'best' checkpointing. ema_fg_dice is computed by the logger and can be accessed like this
+        if self._best_ema is None or self.logger.my_fantastic_logging['ema_fg_dice'][-1] > self._best_ema:
+            self._best_ema = self.logger.my_fantastic_logging['ema_fg_dice'][-1]
+            self.print_to_log_file(f"Yayy! New best EMA pseudo Dice: {np.round(self._best_ema, decimals=4)}")
+            self.save_checkpoint(join(self.output_folder, 'checkpoint_best.pth'))
+
+        if self.local_rank == 0:
+            self.logger.plot_progress_png(self.output_folder)
+
+        self.current_epoch += 1
