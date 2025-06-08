@@ -27,7 +27,7 @@ class nnUNetTrainerGAN(nnUNetTrainerNoDeepSupervision):
         self.initial_dlr = 1e-4
         self.grad_scaler = None
         self.weight_decay = 0.01
-        self.num_epochs = 1000
+        self.num_epochs = 3000
         self.lambda_adv = 0.01  # You can tune this
         self.configuration_manager.configuration['patch_size'] = [128,128,128]
         
