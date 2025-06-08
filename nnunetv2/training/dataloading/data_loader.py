@@ -175,7 +175,7 @@ class nnUNetDataLoader(DataLoader):
             # (Lung for example)
             force_fg = self.get_do_oversample(j)
 
-            data, seg, seg_prev, properties = self._data.load_case(i)
+            data, seg, seg_prev, properties, seg2 = self._data.load_case(i)
 
             # If we are doing the cascade then the segmentation from the previous stage will already have been loaded by
             # self._data.load_case(i) (see nnUNetDataset.load_case)
@@ -188,9 +188,12 @@ class nnUNetDataLoader(DataLoader):
             data_all[j] = crop_and_pad_nd(data, bbox, 0)
 
             seg_cropped = crop_and_pad_nd(seg, bbox, -1)
+            seg2_cropped = crop_and_pad_nd(seg2,bbox, -1)
+            
             if seg_prev is not None:
                 seg_cropped = np.vstack((seg_cropped, crop_and_pad_nd(seg_prev, bbox, -1)[None]))
             seg_all[j] = seg_cropped
+            seg2_all[j] = seg2_cropped
 
         if self.patch_size_was_2d:
             data_all = data_all[:, :, 0]
@@ -201,21 +204,27 @@ class nnUNetDataLoader(DataLoader):
                 with threadpool_limits(limits=1, user_api=None):
                     data_all = torch.from_numpy(data_all).float()
                     seg_all = torch.from_numpy(seg_all).to(torch.int16)
+                    seg2_all = torch.from_numpy(seg2_all).to(torch.int16)
                     images = []
                     segs = []
+                    seg2s = []
                     for b in range(self.batch_size):
                         tmp = self.transforms(**{'image': data_all[b], 'segmentation': seg_all[b]})
+                        tmp2 = self.transforms(**{'image': data_all[b], 'segmentation': seg2_all[b]})
                         images.append(tmp['image'])
                         segs.append(tmp['segmentation'])
+                        seg2s.append(tmp2['segmentation'])
                     data_all = torch.stack(images)
                     if isinstance(segs[0], list):
                         seg_all = [torch.stack([s[i] for s in segs]) for i in range(len(segs[0]))]
+                        seg2_all = [torch.stack([s[i] for s in seg2s]) for i in range(len(seg2s[0]))]
                     else:
                         seg_all = torch.stack(segs)
-                    del segs, images
-            return {'data': data_all, 'target': seg_all, 'keys': selected_keys}
+                        seg2_all = torch.stack(seg2s)
+                    del segs, images, seg2s
+            return {'data': data_all, 'target': seg_all, 'seg': seg2_all, 'keys': selected_keys}
 
-        return {'data': data_all, 'target': seg_all, 'keys': selected_keys}
+        return {'data': data_all, 'target': seg_all,'seg': seg2_all, 'keys': selected_keys}
 
 
 if __name__ == '__main__':
