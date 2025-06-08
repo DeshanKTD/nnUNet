@@ -139,7 +139,10 @@ class nnUNetDatasetBlosc2(nnUNetBaseDataset):
         data = blosc2.open(urlpath=data_b2nd_file, mode='r', dparams=dparams, **mmap_kwargs)
 
         seg_b2nd_file = join(self.source_folder, identifier + '_seg.b2nd')
+        seg2_b2nd_file = join(self.source_folder, identifier + '_seg2.b2nd')
+        
         seg = blosc2.open(urlpath=seg_b2nd_file, mode='r', dparams=dparams, **mmap_kwargs)
+        seg2 = blosc2.open(urlpath=seg2_b2nd_file, mode='r', dparams=dparams, **mmap_kwargs)
 
         if self.folder_with_segs_from_previous_stage is not None:
             prev_seg_b2nd_file = join(self.folder_with_segs_from_previous_stage, identifier + '.b2nd')
@@ -148,7 +151,7 @@ class nnUNetDatasetBlosc2(nnUNetBaseDataset):
             seg_prev = None
 
         properties = load_pickle(join(self.source_folder, identifier + '.pkl'))
-        return data, seg, seg_prev, properties
+        return data, seg, seg_prev, properties, seg2
 
     @staticmethod
     def save_case(

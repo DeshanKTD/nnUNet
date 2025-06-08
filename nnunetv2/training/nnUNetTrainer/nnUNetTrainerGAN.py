@@ -117,6 +117,7 @@ class nnUNetTrainerGAN(nnUNetTrainerNoDeepSupervision):
     def train_step(self,batch: dict) -> dict:
         data = batch['data']
         target = batch['target']
+        seg2 = batch['seg']
         
         data = data.to(self.device, non_blocking=True)
         target = target.to(self.device, non_blocking=True)
@@ -223,6 +224,7 @@ class nnUNetTrainerGAN(nnUNetTrainerNoDeepSupervision):
     def validation_step(self, batch: dict) -> dict:
         data = batch['data']
         target = batch['target']
+        seg2 = batch['seg']
 
         data = data.to(self.device, non_blocking=True)
         if isinstance(target, list):
