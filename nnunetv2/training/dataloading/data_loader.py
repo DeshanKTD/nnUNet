@@ -78,7 +78,7 @@ class nnUNetDataLoader(DataLoader):
 
     def determine_shapes(self):
         # load one case
-        data, seg, seg_prev, properties = self._data.load_case(self._data.identifiers[0])
+        data, seg, seg_prev, properties,seg2 = self._data.load_case(self._data.identifiers[0])
         num_color_channels = data.shape[0]
 
         data_shape = (self.batch_size, num_color_channels, *self.patch_size)
@@ -169,6 +169,7 @@ class nnUNetDataLoader(DataLoader):
         # preallocate memory for data and seg
         data_all = np.zeros(self.data_shape, dtype=np.float32)
         seg_all = np.zeros(self.seg_shape, dtype=np.int16)
+        seg2_all = np.zeros(self.seg_shape, dtype=np.int16)
 
         for j, i in enumerate(selected_keys):
             # oversampling foreground will improve stability of model training, especially if many patches are empty
