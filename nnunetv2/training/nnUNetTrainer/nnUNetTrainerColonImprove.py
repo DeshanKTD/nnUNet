@@ -27,7 +27,7 @@ from nnunetv2.evaluation.evaluate_predictions import compute_metrics_on_folder
 from nnunetv2.inference.sliding_window_prediction import compute_gaussian
 
 
-class nnUNetTrainerColonSeg2(nnUNetTrainerNoDeepSupervision):
+class nnUNetTrainerColonImprove(nnUNetTrainerNoDeepSupervision):
     def __init__(self, plans: dict, configuration: str, fold: int, dataset_json: dict,
                  device: torch.device = torch.device('cuda')):
         super().__init__(plans, configuration, fold, dataset_json, device)
@@ -124,13 +124,15 @@ class nnUNetTrainerColonSeg2(nnUNetTrainerNoDeepSupervision):
 
     
     def train_step(self,batch: dict) -> dict:
-        input_data = batch['data']
+        input_img = batch['data']
         target = batch['target']
-        seg = batch['seg']
+        seg_1 = batch['seg']
+        disconnection_map = batch['disconnection_map']
         
-        data = torch.cat((input_data,seg), dim=1)
-        del input_data
-        del seg
+
+        data = torch.cat((input_img,seg_1), dim=1)
+        del input_img
+        del seg_1
         
         data = data.to(self.device, non_blocking=True)
         target = target.to(self.device, non_blocking=True)
@@ -148,12 +150,12 @@ class nnUNetTrainerColonSeg2(nnUNetTrainerNoDeepSupervision):
             fake_mask = self.network(data)
         
         # generally target is not one hot encoded. Convert it to one hot encoding
-        if fake_mask.shape == target.shape:
+        if fake_mask.shape == disconnection_map.shape:
             # if this is the case then gt is probably already a one hot encoding
-            target_onehot = target
+            target_onehot = disconnection_map
         else:
             target_onehot = torch.zeros(fake_mask.shape, device=fake_mask.device, dtype=torch.bool)
-            target_onehot.scatter_(1, target.long(), 1)
+            target_onehot.scatter_(1, disconnection_map.long(), 1)
         
         # Create the image and output pair for the discriminator
         real_pair = torch.cat([data, target_onehot], dim=1)
@@ -179,8 +181,6 @@ class nnUNetTrainerColonSeg2(nnUNetTrainerNoDeepSupervision):
         d_loss.backward()
         self.optimizer_d.step()
         
-
-        
         # ====================================================
         # 2. Train Generator
         # ====================================================
@@ -193,7 +193,7 @@ class nnUNetTrainerColonSeg2(nnUNetTrainerNoDeepSupervision):
         fake_mask = self.network(data)
         
         # get segmentation loss
-        seg_loss = self.loss(fake_mask,target)
+        seg_loss = self.loss(fake_mask,disconnection_map)
         
         # Generate fake pair
         fake_pair = torch.cat([data, fake_mask], dim=1)
@@ -238,16 +238,17 @@ class nnUNetTrainerColonSeg2(nnUNetTrainerNoDeepSupervision):
         input_data = batch['data']
         target = batch['target']
         seg = batch['seg']
+        disconnection_map = batch['disconnection_map']
 
         data = torch.cat((input_data,seg), dim=1)
         del input_data
         del seg
         
         data = data.to(self.device, non_blocking=True)
-        if isinstance(target, list):
-            target = [i.to(self.device, non_blocking=True) for i in target]
+        if isinstance(disconnection_map, list):
+            disconnection_map = [i.to(self.device, non_blocking=True) for i in disconnection_map]
         else:
-            target = target.to(self.device, non_blocking=True)
+            disconnection_map = disconnection_map.to(self.device, non_blocking=True)
 
         # Autocast can be annoying
         # If the device_type is 'cpu' then it's slow as heck and needs to be disabled.
@@ -263,12 +264,12 @@ class nnUNetTrainerColonSeg2(nnUNetTrainerNoDeepSupervision):
             raise ValueError("Target contains NaN or Inf values")
             
         # generally target is not one hot encoded. Convert it to one hot encoding
-        if output.shape == target.shape:
+        if output.shape == disconnection_map.shape:
             # if this is the case then gt is probably already a one hot encoding
-            target_onehot = target
+            target_onehot = disconnection_map
         else:
             target_onehot = torch.zeros(output.shape, device=output.device, dtype=torch.bool)
-            target_onehot.scatter_(1, target.long(), 1)
+            target_onehot.scatter_(1, disconnection_map.long(), 1)
         
         real_pair = torch.cat([data,target_onehot], dim=1)
         fake_pair = torch.cat([data, output], dim=1)
@@ -312,7 +313,7 @@ class nnUNetTrainerColonSeg2(nnUNetTrainerNoDeepSupervision):
             del output_seg
         mask=None
 
-        tp, fp, fn, _ = get_tp_fp_fn_tn(predicted_segmentation_onehot, target, axes=axes, mask=mask)
+        tp, fp, fn, _ = get_tp_fp_fn_tn(predicted_segmentation_onehot, disconnection_map, axes=axes, mask=mask)
 
         tp_hard = tp.detach().cpu().numpy()
         fp_hard = fp.detach().cpu().numpy()
@@ -429,7 +430,7 @@ class nnUNetTrainerColonSeg2(nnUNetTrainerNoDeepSupervision):
                                                                allowed_num_queued=2)
 
                 self.print_to_log_file(f"predicting {k}")
-                data, _, seg_prev, properties, seg2 = dataset_val.load_case(k)
+                data, _, seg_prev, properties, seg2,_ = dataset_val.load_case(k)
 
                 # we do [:] to convert blosc2 to numpy
                 data = data[:]
@@ -482,7 +483,7 @@ class nnUNetTrainerColonSeg2(nnUNetTrainerNoDeepSupervision):
                         try:
                             # we do this so that we can use load_case and do not have to hard code how loading training cases is implemented
                             tmp = dataset_class(expected_preprocessed_folder, [k])
-                            d, _, _, _ = tmp.load_case(k)
+                            d, _, _, _, _,_ = tmp.load_case(k)
                         except FileNotFoundError:
                             self.print_to_log_file(
                                 f"Predicting next stage {n} failed for case {k} because the preprocessed file is missing! "

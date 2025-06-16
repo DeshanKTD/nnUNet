@@ -14,6 +14,7 @@ from batchgenerators.utilities.file_and_folder_operations import join, load_pick
 from nnunetv2.configuration import default_num_processes
 from nnunetv2.training.dataloading.utils import unpack_dataset
 import math
+from skimage.morphology import dilation, ball, erosion
 
 
 class nnUNetBaseDataset(ABC):
@@ -139,10 +140,10 @@ class nnUNetDatasetBlosc2(nnUNetBaseDataset):
         data = blosc2.open(urlpath=data_b2nd_file, mode='r', dparams=dparams, **mmap_kwargs)
 
         seg_b2nd_file = join(self.source_folder, identifier + '_seg.b2nd')
-        seg2_b2nd_file = join(self.source_folder, identifier + '_seg2.b2nd')
+        seg1_b2nd_file = join(self.source_folder, identifier + '_seg2.b2nd')
         
         seg = blosc2.open(urlpath=seg_b2nd_file, mode='r', dparams=dparams, **mmap_kwargs)
-        seg2 = blosc2.open(urlpath=seg2_b2nd_file, mode='r', dparams=dparams, **mmap_kwargs)
+        seg_1 = blosc2.open(urlpath=seg1_b2nd_file, mode='r', dparams=dparams, **mmap_kwargs)
 
         if self.folder_with_segs_from_previous_stage is not None:
             prev_seg_b2nd_file = join(self.folder_with_segs_from_previous_stage, identifier + '.b2nd')
@@ -151,7 +152,32 @@ class nnUNetDatasetBlosc2(nnUNetBaseDataset):
             seg_prev = None
 
         properties = load_pickle(join(self.source_folder, identifier + '.pkl'))
-        return data, seg, seg_prev, properties, seg2
+        
+        disconnections = self._create_disconnection_map(seg_1,seg)
+        
+        return data, seg, seg_prev, properties, seg_1, disconnections
+    
+    def _create_disconnection_map(self,seg_1,gt):
+        expand_amount = 20
+        
+        # extract disconnections
+        disconnections = np.where((gt==1) & (seg_1==1),0,gt)
+        
+        # set the dialation/ erosion amount
+        select_element = ball(1)
+        
+        # erosion - to remove small remainig parts
+        erosion_seg = disconnections
+        for i in range(expand_amount):
+            erosion_seg = erosion(erosion_seg, select_element)
+        
+        
+        # dialation - resize large remainig parts
+        dialated_seg = erosion_seg
+        for i in range(expand_amount):
+            dialated_seg = dilation(dialated_seg, select_element)
+
+        return dialated_seg
 
     @staticmethod
     def save_case(
