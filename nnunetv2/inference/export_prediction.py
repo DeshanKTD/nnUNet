@@ -73,7 +73,7 @@ def convert_predicted_logits_to_segmentation_with_correct_shape(predicted_logits
         return segmentation_reverted_cropping
 
 
-def export_prediction_from_logits(predicted_array_or_file: Union[np.ndarray, torch.Tensor], properties_dict: dict,
+def export_prediction_from_logits(predicted_array_or_file: Union[np.ndarray, torch.Tensor], combine_array: Union[np.ndarray, torch.Tensor], properties_dict: dict,
                                   configuration_manager: ConfigurationManager,
                                   plans_manager: PlansManager,
                                   dataset_json_dict_or_file: Union[dict, str], output_file_truncated: str,
@@ -97,6 +97,7 @@ def export_prediction_from_logits(predicted_array_or_file: Union[np.ndarray, tor
     )
     del predicted_array_or_file
 
+    
     # save
     if save_probabilities:
         segmentation_final, probabilities_final = ret
@@ -107,6 +108,8 @@ def export_prediction_from_logits(predicted_array_or_file: Union[np.ndarray, tor
         segmentation_final = ret
         del ret
 
+    segmentation_final = np.where(segmentation_final ==1, 1, combine_array)
+    
     rw = plans_manager.image_reader_writer_class()
     rw.write_seg(segmentation_final, output_file_truncated + dataset_json_dict_or_file['file_ending'],
                  properties_dict)

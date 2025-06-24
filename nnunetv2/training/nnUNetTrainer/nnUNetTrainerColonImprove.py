@@ -11,6 +11,7 @@ import numpy as np
 from time import time, sleep
 import multiprocessing
 import warnings
+import sys
 
 from nnunetv2.configuration import ANISO_THRESHOLD, default_num_processes
 from nnunetv2.training.dataloading.nnunet_dataset import infer_dataset_class
@@ -36,10 +37,9 @@ class nnUNetTrainerColonImprove(nnUNetTrainerNoDeepSupervision):
         self.initial_dlr = 1e-4
         self.grad_scaler = None
         self.weight_decay = 0.01
-        self.num_epochs = 2000
+        self.num_epochs = 1000
         self.lambda_adv = 0.01  # You can tune this
         self.configuration_manager.configuration['patch_size'] = [128,128,128]
-        
         
     def initialize(self):
             print('......... on initialiaze .........................')
@@ -97,7 +97,7 @@ class nnUNetTrainerColonImprove(nnUNetTrainerNoDeepSupervision):
 
         print("number of output channels: ", num_output_channels)
         generator = SEUNet3D(in_channels=2,out_channels=num_output_channels,feature_channels=[8, 16, 32, 64])
-        discriminator = Discriminator3D(in_channels=num_output_channels+2, base_features=16)
+        discriminator = Discriminator3D(in_channels=num_output_channels, base_features=16)
         
         return generator, discriminator
     
@@ -129,13 +129,13 @@ class nnUNetTrainerColonImprove(nnUNetTrainerNoDeepSupervision):
         seg_1 = batch['seg']
         disconnection_map = batch['disconnection_map']
         
-
         data = torch.cat((input_img,seg_1), dim=1)
         del input_img
         del seg_1
         
         data = data.to(self.device, non_blocking=True)
-        target = target.to(self.device, non_blocking=True)
+        # target = target.to(self.device, non_blocking=True)
+        disconnection_map = disconnection_map.to(self.device, non_blocking=True)
         
         # ====================================================
         # 1. Train Discriminator
@@ -155,15 +155,14 @@ class nnUNetTrainerColonImprove(nnUNetTrainerNoDeepSupervision):
             target_onehot = disconnection_map
         else:
             target_onehot = torch.zeros(fake_mask.shape, device=fake_mask.device, dtype=torch.bool)
-            target_onehot.scatter_(1, disconnection_map.long(), 1)
-        
-        # Create the image and output pair for the discriminator
-        real_pair = torch.cat([data, target_onehot], dim=1)
-        fake_pair = torch.cat([data, fake_mask], dim=1)
+            if(len(torch.unique(disconnection_map)) ==2):
+                target_onehot.scatter_(1, disconnection_map.long(), 1)
+        target_onehot = target_onehot.float()
+        # print('one hot shape and unique: ', target_onehot.shape, torch.unique(target_onehot))
         
         # get discriminaotr output for real and fake pair
-        d_real = self.discriminator(real_pair)
-        d_fake = self.discriminator(fake_pair)
+        d_fake = self.discriminator(fake_mask)
+        d_real = self.discriminator(target_onehot)
         
         # genereate targets for real and fake pair outputs from the discriminator
         real_labels = torch.ones_like(d_real)
@@ -195,11 +194,11 @@ class nnUNetTrainerColonImprove(nnUNetTrainerNoDeepSupervision):
         # get segmentation loss
         seg_loss = self.loss(fake_mask,disconnection_map)
         
-        # Generate fake pair
-        fake_pair = torch.cat([data, fake_mask], dim=1)
+        # # Generate fake pair
+        # fake_pair = torch.cat([data, fake_mask], dim=1)
         # Get discriminator output
         with torch.no_grad():
-            pred_fake = self.discriminator(fake_pair)
+            pred_fake = self.discriminator(fake_mask)
         
         # Get adversarial loss --> forcing generator to predict ones for fake pair
         adv_loss = self.bce_loss(pred_fake, torch.ones_like(pred_fake))
@@ -269,31 +268,18 @@ class nnUNetTrainerColonImprove(nnUNetTrainerNoDeepSupervision):
             target_onehot = disconnection_map
         else:
             target_onehot = torch.zeros(output.shape, device=output.device, dtype=torch.bool)
-            target_onehot.scatter_(1, disconnection_map.long(), 1)
+            if(len(torch.unique(disconnection_map)) ==2):
+                target_onehot.scatter_(1, disconnection_map.long(), 1)
+            target_onehot = target_onehot.float()
         
-        real_pair = torch.cat([data,target_onehot], dim=1)
-        fake_pair = torch.cat([data, output], dim=1)
-        
-        douput = self.discriminator(fake_pair)
-        routput = self.discriminator(real_pair)
+        douput = self.discriminator(output)
+        routput = self.discriminator(target_onehot)
         
         del data
-        
-        
-        # target = target.long()
-        # if target.shape[1] == 1:
-        #     target = target[:, 0]
 
-        # output = output.float() 
-
-        l = self.loss(output, target)
+        l = self.loss(output, disconnection_map)
         dl = self.bce_loss(douput,routput)
         
-        # print("Loss fn:", self.loss)
-        # print("Output dtype/shape/min/max:", output.dtype, output.shape, output.min().item(), output.max().item())
-        # print("Target dtype/shape/min/max:", target.dtype, target.shape, target.min().item(), target.max().item())
-        
-        # print('val seg loss -----', l)
 
         # we only need the output with the highest output resolution (if DS enabled)
         if self.enable_deep_supervision:
@@ -329,6 +315,7 @@ class nnUNetTrainerColonImprove(nnUNetTrainerNoDeepSupervision):
 
         # TODO - Discriminator loss is not showing
         return {'loss': l.detach().cpu().numpy(), 'dloss': dl.detach().cpu().numpy(),'tp_hard': tp_hard, 'fp_hard': fp_hard, 'fn_hard': fn_hard}
+        # return {'loss': 0, 'dloss': 0,'tp_hard': 0, 'fp_hard': 0, 'fn_hard': 0}
     
     def on_validation_epoch_end(self, val_outputs: List[dict]):
         outputs_collated = collate_outputs(val_outputs)
@@ -457,12 +444,17 @@ class nnUNetTrainerColonImprove(nnUNetTrainerNoDeepSupervision):
 
                 prediction = predictor.predict_sliding_window_return_logits(data)
                 prediction = prediction.cpu()
+                
+                # remove the batch dimension
+                if seg2.ndim == 4:
+                    seg2 = seg2[0]
+                seg2 = seg2.numpy()
 
                 # this needs to go into background processes
                 results.append(
                     segmentation_export_pool.starmap_async(
                         export_prediction_from_logits, (
-                            (prediction, properties, self.configuration_manager, self.plans_manager,
+                            (prediction,seg2, properties, self.configuration_manager, self.plans_manager,
                              self.dataset_json, output_filename_truncated, save_probabilities),
                         )
                     )
