@@ -439,22 +439,33 @@ class nnUNetTrainerColonImprove(nnUNetTrainerNoDeepSupervision):
                     seg2 = torch.from_numpy(seg2)
                     data = torch.cat((data,seg2),dim=0)
 
-                self.print_to_log_file(f'{k}, shape {data.shape}, rank {self.local_rank}')
+                # self.print_to_log_file(f'{k}, shape {data.shape}, rank {self.local_rank}')
+                print(f'{k}, shape {data.shape}, rank {self.local_rank}')
                 output_filename_truncated = join(validation_output_folder, k)
 
                 prediction = predictor.predict_sliding_window_return_logits(data)
                 prediction = prediction.cpu()
                 
-                # remove the batch dimension
-                if seg2.ndim == 4:
-                    seg2 = seg2[0]
-                seg2 = seg2.numpy()
-
+                # generally target is not one hot encoded. Convert it to one hot encoding
+                if prediction.shape == seg2.shape:
+                    # if this is the case then gt is probably already a one hot encoding
+                    seg2_onehot = seg2
+                else:
+                    seg2_onehot = torch.zeros(prediction.shape, device=prediction.device, dtype=torch.bool)
+                    if(len(torch.unique(seg2)) ==2):
+                        seg2_onehot.scatter_(0, seg2.long(), 1)
+                seg2_onehot = seg2_onehot.float()
+                
+                # print('one hot shape and unique: ', seg2_onehot.shape, torch.unique(seg2_onehot))
+                # print(f'prediction shape: {prediction.shape}')
+                
+                # sys.exit()
+                
                 # this needs to go into background processes
                 results.append(
                     segmentation_export_pool.starmap_async(
                         export_prediction_from_logits, (
-                            (prediction,seg2, properties, self.configuration_manager, self.plans_manager,
+                            (prediction,seg2_onehot, properties, self.configuration_manager, self.plans_manager,
                              self.dataset_json, output_filename_truncated, save_probabilities),
                         )
                     )
@@ -524,3 +535,4 @@ class nnUNetTrainerColonImprove(nnUNetTrainerNoDeepSupervision):
 
         self.set_deep_supervision_enabled(True)
         compute_gaussian.cache_clear()
+

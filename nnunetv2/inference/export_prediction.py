@@ -86,7 +86,6 @@ def export_prediction_from_logits(predicted_array_or_file: Union[np.ndarray, tor
     #     elif predicted_array_or_file.endswith('.npz'):
     #         predicted_array_or_file = np.load(predicted_array_or_file)['softmax']
     #     os.remove(tmp)
-
     if isinstance(dataset_json_dict_or_file, str):
         dataset_json_dict_or_file = load_json(dataset_json_dict_or_file)
 
@@ -95,8 +94,14 @@ def export_prediction_from_logits(predicted_array_or_file: Union[np.ndarray, tor
         predicted_array_or_file, plans_manager, configuration_manager, label_manager, properties_dict,
         return_probabilities=save_probabilities, num_threads_torch=num_threads_torch
     )
+    
+    ret_combined = convert_predicted_logits_to_segmentation_with_correct_shape(
+        combine_array, plans_manager, configuration_manager, label_manager, properties_dict,
+        return_probabilities=save_probabilities, num_threads_torch=num_threads_torch
+    )
+    
     del predicted_array_or_file
-
+    del combine_array
     
     # save
     if save_probabilities:
@@ -106,9 +111,11 @@ def export_prediction_from_logits(predicted_array_or_file: Union[np.ndarray, tor
         del probabilities_final, ret
     else:
         segmentation_final = ret
+        network_one_output = ret_combined
         del ret
+        del ret_combined
 
-    segmentation_final = np.where(segmentation_final ==1, 1, combine_array)
+    segmentation_final = np.where(segmentation_final ==1, 1, network_one_output)
     
     rw = plans_manager.image_reader_writer_class()
     rw.write_seg(segmentation_final, output_file_truncated + dataset_json_dict_or_file['file_ending'],
