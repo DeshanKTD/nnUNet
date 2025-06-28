@@ -443,26 +443,12 @@ class nnUNetTrainerColonImproveGAN(nnUNetTrainerNoDeepSupervision):
                 prediction = predictor.predict_sliding_window_return_logits(data)
                 prediction = prediction.cpu()
                 
-                # generally target is not one hot encoded. Convert it to one hot encoding
-                if prediction.shape == seg2.shape:
-                    # if this is the case then gt is probably already a one hot encoding
-                    seg2_onehot = seg2
-                else:
-                    seg2_onehot = torch.zeros(prediction.shape, device=prediction.device, dtype=torch.bool)
-                    if(len(torch.unique(seg2)) ==2):
-                        seg2_onehot.scatter_(0, seg2.long(), 1)
-                seg2_onehot = seg2_onehot.float()
-                
-                # print('one hot shape and unique: ', seg2_onehot.shape, torch.unique(seg2_onehot))
-                # print(f'prediction shape: {prediction.shape}')
-                
-                # sys.exit()
                 
                 # this needs to go into background processes
                 results.append(
                     segmentation_export_pool.starmap_async(
                         export_prediction_from_logits, (
-                            (prediction,seg2_onehot, properties, self.configuration_manager, self.plans_manager,
+                            (prediction, properties, self.configuration_manager, self.plans_manager,
                              self.dataset_json, output_filename_truncated, save_probabilities),
                         )
                     )
@@ -483,7 +469,7 @@ class nnUNetTrainerColonImproveGAN(nnUNetTrainerNoDeepSupervision):
                         try:
                             # we do this so that we can use load_case and do not have to hard code how loading training cases is implemented
                             tmp = dataset_class(expected_preprocessed_folder, [k])
-                            d, _, _, _, _,_ = tmp.load_case(k)
+                            d, _, _, _, _ = tmp.load_case(k)
                         except FileNotFoundError:
                             self.print_to_log_file(
                                 f"Predicting next stage {n} failed for case {k} because the preprocessed file is missing! "
