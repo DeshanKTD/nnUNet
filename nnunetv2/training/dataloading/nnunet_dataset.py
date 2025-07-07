@@ -153,12 +153,25 @@ class nnUNetDatasetBlosc2(nnUNetBaseDataset):
 
         properties = load_pickle(join(self.source_folder, identifier + '.pkl'))
         
+        seg = self._remove_negative_values(seg)
+        seg_1 = self._remove_negative_values(seg_1)
+        
         disconnections = self._create_disconnection_map(seg_1,seg)
         
         return data, seg, seg_prev, properties, seg_1, disconnections
     
+    def _remove_negative_values(self, seg):
+        """
+        Removes negative values from the segmentation map.
+        This is a workaround for a bug in the nnUNet preprocessing pipeline.
+        """
+        seg = np.where(seg == 1, 1, 0)  # set negative values to 0
+        return seg
+    
     def _create_disconnection_map(self,seg_1,gt):
-        expand_amount = 20
+        # print('seg out shape:', seg_1.shape)
+        # print('GT shape:', gt.shape)
+        expand_amount = 2
         
         # extract disconnections
         disconnections = np.where((gt==1) & (seg_1==1),0,gt)
@@ -169,14 +182,13 @@ class nnUNetDatasetBlosc2(nnUNetBaseDataset):
         # erosion - to remove small remainig parts
         erosion_seg = disconnections
         for i in range(expand_amount):
-            erosion_seg = erosion(erosion_seg, select_element)
-        
+            erosion_seg[0] = erosion(erosion_seg[0], select_element)
         
         # dialation - resize large remainig parts
         dialated_seg = erosion_seg
         for i in range(expand_amount):
-            dialated_seg = dilation(dialated_seg, select_element)
-
+            dialated_seg[0] = dilation(dialated_seg[0], select_element)
+        
         return dialated_seg
 
     @staticmethod

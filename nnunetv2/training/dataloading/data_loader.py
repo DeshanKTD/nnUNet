@@ -188,7 +188,6 @@ class nnUNetDataLoader(DataLoader):
 
             # use ACVL utils for that. Cleaner.
             data_all[j] = crop_and_pad_nd(data, bbox, 0)
-
             seg_cropped = crop_and_pad_nd(seg, bbox, -1)
             seg2_cropped = crop_and_pad_nd(seg2,bbox, -1)
             dism_cropped = crop_and_pad_nd(disconnection_map, bbox,-1)
@@ -221,13 +220,10 @@ class nnUNetDataLoader(DataLoader):
                                 'segmentation_out_1': seg2_all[b],
                                 'disconnection_map': disconnection_map_all[b]
                             })
-                        # tmp2 = self.transforms(**{'image': data_all[b], 'segmentation': seg2_all[b]})
-                        # tmp3 = self.transforms(**{'image': data_all[b], 'segmentation': disconnection_map_all[b]})
                         images.append(tmp['image'])
                         segs.append(tmp['segmentation'])
                         seg2s.append(tmp['segmentation_out_1'])
-                        disconnection_maps.append(tmp['disconnection_map_all'])
-                        
+                        disconnection_maps.append(tmp['disconnection_map'])
                         
                     data_all = torch.stack(images)
                     if isinstance(segs[0], list):
