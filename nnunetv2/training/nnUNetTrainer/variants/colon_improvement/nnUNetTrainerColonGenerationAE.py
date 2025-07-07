@@ -32,7 +32,16 @@ from batchgeneratorsv2.transforms.utils.remove_label import RemoveLabelTansform
 from batchgeneratorsv2.transforms.utils.compose import ComposeTransforms
 from nnunetv2.training.dataloading.utils import crop_with_bbox, get_padded_3d_segmentation_box, resize_data
 
+'''
+This class implements a nnUNet trainer for the Colon Disconnection improvement task using an AutoEncoder architecture.
+It inherits from nnUNetTrainerNoDeepSupervision and overrides methods to set up the network
 
+Experiment 03 - Task 04 - Colon Generation AE
+Input - 1 channel - segmentation from previous stage
+Output - 1 channel - segmentation mask
+Loss - Dice and BCE loss 
+Evaluvated against the ground truth segmentation mask
+'''
 class nnUNetTrainerColonGenerationAE(nnUNetTrainerNoDeepSupervision):
     def __init__(self, plans: dict, configuration: str, fold: int, dataset_json: dict,
                  device: torch.device = torch.device('cuda')):
