@@ -100,10 +100,8 @@ def export_prediction_from_logits(predicted_array_or_file: Union[np.ndarray, tor
         return_probabilities=save_probabilities, num_threads_torch=num_threads_torch
     )
     
-    
     del predicted_array_or_file
     del combine_array
-
     
     # save
     if save_probabilities:
@@ -116,10 +114,6 @@ def export_prediction_from_logits(predicted_array_or_file: Union[np.ndarray, tor
         network_one_output = ret_combined
         del ret
         del ret_combined
-    # print count ones in segmentation_final
-
-    print(f'segmentaion final 1 count : {np.sum(segmentation_final == 1)}')
-    print(f'network one output 1 count : {np.sum(network_one_output == 1)}')
 
     segmentation_final = np.where(segmentation_final ==1, 1, network_one_output)
     
