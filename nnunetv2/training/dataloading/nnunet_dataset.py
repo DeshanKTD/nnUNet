@@ -156,6 +156,7 @@ class nnUNetDatasetBlosc2(nnUNetBaseDataset):
         seg = self._remove_negative_values(seg)
         seg_1 = self._remove_negative_values(seg_1)
         
+        
         return data, seg, seg_prev, properties, seg_1
     
     def _remove_negative_values(self, seg):
@@ -163,9 +164,9 @@ class nnUNetDatasetBlosc2(nnUNetBaseDataset):
         Removes negative values from the segmentation map.
         This is a workaround for a bug in the nnUNet preprocessing pipeline.
         """
-        seg = np.where(seg == 1, 1, seg)  # set negative values to 0
+        seg = np.where(seg == 1, 1, 0)  # set negative values to 0
         return seg
-
+    
     @staticmethod
     def save_case(
             data: np.ndarray,

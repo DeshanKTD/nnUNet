@@ -3,7 +3,8 @@ import torch
 from torch import autocast
 import torch.nn as nn
 from torch import distributed as dist
-from network_architectures.networks.auto_encoder.basic.auto_encoder import AutoEncoder
+from network_architectures.networks.unet.se_unet.se_unet_3d import SEUNet3D
+from network_architectures.networks.gan.basic.discriminator import Discriminator3D
 from batchgenerators.utilities.file_and_folder_operations import join, load_json, isfile, save_json, maybe_mkdir_p
 from typing import List, Tuple, Union
 import numpy as np
@@ -25,24 +26,9 @@ from nnunetv2.utilities.file_path_utilities import check_workers_alive_and_busy
 from nnunetv2.inference.export_prediction import export_prediction_from_logits, resample_and_save
 from nnunetv2.evaluation.evaluate_predictions import compute_metrics_on_folder
 from nnunetv2.inference.sliding_window_prediction import compute_gaussian
-from batchgeneratorsv2.helpers.scalar_type import RandomScalar
-from batchgeneratorsv2.transforms.base.basic_transform import BasicTransform
-from batchgeneratorsv2.transforms.spatial.mirroring import MirrorTransform
-from batchgeneratorsv2.transforms.utils.remove_label import RemoveLabelTansform
-from batchgeneratorsv2.transforms.utils.compose import ComposeTransforms
-from nnunetv2.training.dataloading.utils import crop_with_bbox, get_padded_3d_segmentation_box, resize_data
 
-'''
-This class implements a nnUNet trainer for the Colon Disconnection improvement task using an AutoEncoder architecture.
-It inherits from nnUNetTrainerNoDeepSupervision and overrides methods to set up the network
 
-Experiment 03 - Task 04 - Colon Generation AE
-Input - 1 channel - segmentation from previous stage
-Output - 1 channel - segmentation mask
-Loss - Dice and BCE loss 
-Evaluvated against the ground truth segmentation mask
-'''
-class nnUNetTrainerColonGenerationAE2(nnUNetTrainerNoDeepSupervision):
+class nnUNetTrainerColonImprove(nnUNetTrainerNoDeepSupervision):
     def __init__(self, plans: dict, configuration: str, fold: int, dataset_json: dict,
                  device: torch.device = torch.device('cuda')):
         super().__init__(plans, configuration, fold, dataset_json, device)
@@ -51,9 +37,54 @@ class nnUNetTrainerColonGenerationAE2(nnUNetTrainerNoDeepSupervision):
         self.initial_dlr = 1e-4
         self.grad_scaler = None
         self.weight_decay = 0.01
-        self.num_epochs = 1000
+        self.num_epochs = 500
         self.lambda_adv = 0.01  # You can tune this
-        self.configuration_manager.configuration['patch_size'] = [192,192,192]
+        self.configuration_manager.configuration['patch_size'] = [128,128,128]
+        
+    def initialize(self):
+            print('......... on initialiaze .........................')
+            if not self.was_initialized:
+                ## DDP batch size and oversampling can differ between workers and needs adaptation
+                # we need to change the batch size in DDP because we don't use any of those distributed samplers
+                self._set_batch_size_and_oversample()
+
+                self.num_input_channels = determine_num_input_channels(self.plans_manager, self.configuration_manager,
+                                                                    self.dataset_json)
+
+                self.network, self.discriminator = self.build_network_architecture(
+                    self.configuration_manager.network_arch_class_name,
+                    self.configuration_manager.network_arch_init_kwargs,
+                    self.configuration_manager.network_arch_init_kwargs_req_import,
+                    self.configuration_manager.patch_size,
+                    self.num_input_channels,
+                    self.label_manager.num_segmentation_heads,
+                    self.enable_deep_supervision
+                )
+                self.network.to(self.device)
+                self.discriminator.to(self.device)
+                # compile network for free speedup
+                if self._do_i_compile():
+                    self.print_to_log_file('Using torch.compile...')
+                    self.network = torch.compile(self.network)
+
+                self.optimizer, self.lr_scheduler, self.optimizer_d, self.dlr_scheudler = self.configure_optimizers()
+                # if ddp, wrap in DDP wrapper
+                if self.is_ddp:
+                    self.network = torch.nn.SyncBatchNorm.convert_sync_batchnorm(self.network)
+                    self.network = DDP(self.network, device_ids=[self.local_rank])
+
+                self.loss = self._build_loss()
+                self.bce_loss = nn.BCELoss()
+
+                self.dataset_class = infer_dataset_class(self.preprocessed_dataset_folder)
+
+                # torch 2.2.2 crashes upon compiling CE loss
+                # if self._do_i_compile():
+                #     self.loss = torch.compile(self.loss)
+                self.was_initialized = True
+            else:
+                raise RuntimeError("You have called self.initialize even though the trainer was already initialized. "
+                                "That should not happen.")
         
     @staticmethod
     def build_network_architecture(architecture_class_name: str,
@@ -65,97 +96,25 @@ class nnUNetTrainerColonGenerationAE2(nnUNetTrainerNoDeepSupervision):
                                    enable_deep_supervision: bool = False) -> nn.Module:
 
         print("number of output channels: ", num_output_channels)
-        model = AutoEncoder(in_channels=2, out_channels=num_output_channels)
+        generator = SEUNet3D(in_channels=2,out_channels=num_output_channels,feature_channels=[8, 16, 32, 64])
+        discriminator = Discriminator3D(in_channels=num_output_channels, base_features=16)
         
-        return model
+        return generator, discriminator
     
-    
-    @staticmethod
-    def get_training_transforms(
-            patch_size: Union[np.ndarray, Tuple[int]],
-            rotation_for_DA: RandomScalar,
-            deep_supervision_scales: Union[List, Tuple, None],
-            mirror_axes: Tuple[int, ...],
-            do_dummy_2d_data_aug: bool,
-            use_mask_for_norm: List[bool] = None,
-            is_cascaded: bool = False,
-            foreground_labels: Union[Tuple[int, ...], List[int]] = None,
-            regions: List[Union[List[int], Tuple[int, ...], int]] = None,
-            ignore_label: int = None,
-    ) -> BasicTransform:
-        transforms = []
-        if do_dummy_2d_data_aug:
-            ignore_axes = (0,)
-            transforms.append(Convert3DTo2DTransform())
-            patch_size_spatial = patch_size[1:]
-        else:
-            patch_size_spatial = patch_size
-            ignore_axes = None
-            
-        # transforms.append(
-        #     SpatialTransform(
-        #         patch_size_spatial, patch_center_dist_from_border=0, random_crop=False, p_elastic_deform=0,
-        #         p_rotation=0.2,
-        #         rotation=rotation_for_DA, p_scaling=0.2, scaling=(0.7, 1.4), p_synchronize_scaling_across_axes=1,
-        #         bg_style_seg_sampling=False  # , mode_seg='nearest'
-        #     )
-        # )
-
+    def configure_optimizers(self):
+        optimizer = torch.optim.SGD(self.network.parameters(), self.initial_lr, weight_decay=self.weight_decay,
+                                    momentum=0.99, nesterov=True)
+        lr_scheduler = PolyLRScheduler(optimizer, self.initial_lr, self.num_epochs)
+        #TODO - Use a scheduler 
+        optimizer_d = torch.optim.Adam(self.discriminator.parameters(),self.initial_dlr)
+        dlr_scheudler = PolyLRScheduler(optimizer_d, self.initial_dlr, self.num_epochs)
         
-
-        # if mirror_axes is not None and len(mirror_axes) > 0:
-        #     transforms.append(
-        #         MirrorTransform(
-        #             allowed_axes=mirror_axes
-        #         )
-        #     )
-
-        # if use_mask_for_norm is not None and any(use_mask_for_norm):
-        #     transforms.append(MaskImageTransform(
-        #         apply_to_channels=[i for i in range(len(use_mask_for_norm)) if use_mask_for_norm[i]],
-        #         channel_idx_in_seg=0,
-        #         set_outside_to=0,
-        #     ))
-
-        transforms.append(
-            RemoveLabelTansform(-1, 0)
-        )
-        
-        # if regions is not None:
-        #     # the ignore label must also be converted
-        #     transforms.append(
-        #         ConvertSegmentationToRegionsTransform(
-        #             regions=list(regions) + [ignore_label] if ignore_label is not None else regions,
-        #             channel_in_seg=0
-        #         )
-        #     )
-
-        if deep_supervision_scales is not None:
-            transforms.append(DownsampleSegForDSTransform(ds_scales=deep_supervision_scales))
-
-        return ComposeTransforms(transforms)
-
-    @staticmethod
-    def get_validation_transforms(
-            deep_supervision_scales: Union[List, Tuple, None],
-            is_cascaded: bool = False,
-            foreground_labels: Union[Tuple[int, ...], List[int]] = None,
-            regions: List[Union[List[int], Tuple[int, ...], int]] = None,
-            ignore_label: int = None,
-    ) -> BasicTransform:
-        transforms = []
-        transforms.append(
-            RemoveLabelTansform(-1, 0)
-        )
-
-        if deep_supervision_scales is not None:
-            transforms.append(DownsampleSegForDSTransform(ds_scales=deep_supervision_scales))
-        return ComposeTransforms(transforms)
-
+        return optimizer, lr_scheduler, optimizer_d, dlr_scheudler
     
     def on_train_epoch_start(self):
         # self.network.train()
         self.lr_scheduler.step(self.current_epoch)
+        self.dlr_scheudler.step(self.current_epoch)
         self.print_to_log_file('')
         self.print_to_log_file(f'Epoch {self.current_epoch}')
         self.print_to_log_file(
@@ -168,29 +127,92 @@ class nnUNetTrainerColonGenerationAE2(nnUNetTrainerNoDeepSupervision):
         input_img = batch['data']
         target = batch['target']
         seg_1 = batch['seg']
+        disconnection_map = batch['disconnection_map']
         
-        # print(f"target shape: {target.shape}, seg_1 shape: {seg_1.shape}, input_img shape: {input_img.shape}")
-        data = torch.cat([input_img, seg_1], dim=1)
+        data = torch.cat((input_img,seg_1), dim=1)
+        del input_img
+        del seg_1
         
         data = data.to(self.device, non_blocking=True)
-        target = target.to(self.device, non_blocking=True)
+        # target = target.to(self.device, non_blocking=True)
+        disconnection_map = disconnection_map.to(self.device, non_blocking=True)
         
+        # ====================================================
+        # 1. Train Discriminator
+        # ====================================================
+        
+        # set generator to eval and discriminator to train
+        self.network.eval()
+        self.discriminator.train()
+        
+        # get the network output
+        with torch.no_grad():
+            fake_mask = self.network(data)
+        
+        # generally target is not one hot encoded. Convert it to one hot encoding
+        if fake_mask.shape == disconnection_map.shape:
+            # if this is the case then gt is probably already a one hot encoding
+            target_onehot = disconnection_map
+        else:
+            target_onehot = torch.zeros(fake_mask.shape, device=fake_mask.device, dtype=torch.bool)
+            if(len(torch.unique(disconnection_map)) ==2):
+                target_onehot.scatter_(1, disconnection_map.long(), 1)
+        target_onehot = target_onehot.float()
+        # print('one hot shape and unique: ', target_onehot.shape, torch.unique(target_onehot))
+        
+        # get discriminaotr output for real and fake pair
+        d_fake = self.discriminator(fake_mask)
+        d_real = self.discriminator(target_onehot)
+        
+        # genereate targets for real and fake pair outputs from the discriminator
+        real_labels = torch.ones_like(d_real)
+        fake_labels = torch.zeros_like(d_fake)
+        
+        # calculate the loss with the ouput and target
+        d_loss_real = self.bce_loss(d_real,real_labels)
+        d_loss_fake = self.bce_loss(d_fake, fake_labels)
+        
+        d_loss = (d_loss_real+d_loss_fake)/2
+        
+        # Handle Optimizers
+        # loss backwards 
+        self.optimizer_d.zero_grad()
+        d_loss.backward()
+        self.optimizer_d.step()
+        
+        # ====================================================
+        # 2. Train Generator
+        # ====================================================
         
         # set generator to train and discriminator to eval
         self.network.train()
-       
+        self.discriminator.eval()
+        
+        # In here target automatically handles by nnUNet
         fake_mask = self.network(data)
         
         # get segmentation loss
-        l = self.loss(fake_mask,target)
+        seg_loss = self.loss(fake_mask,disconnection_map)
+        
+        # # Generate fake pair
+        # fake_pair = torch.cat([data, fake_mask], dim=1)
+        # Get discriminator output
+        with torch.no_grad():
+            pred_fake = self.discriminator(fake_mask)
+        
+        # Get adversarial loss --> forcing generator to predict ones for fake pair
+        adv_loss = self.bce_loss(pred_fake, torch.ones_like(pred_fake))
+        
+        # Compound loss
+        # TODO - Check loss
+        g_loss = seg_loss + self.lambda_adv * adv_loss
         
         # Handle Optimizers
         self.optimizer.zero_grad()
-        l.backward()
+        g_loss.backward()
         self.optimizer.step()
         
-        return {"loss": l.detach().cpu().numpy()}
-        # return {"loss": 0.0}
+        return {"loss": g_loss.detach().cpu().numpy(), "dloss": d_loss.detach().cpu().numpy()}
         
     def on_train_epoch_end(self, train_outputs: List[dict]):
         outputs = collate_outputs(train_outputs)
@@ -201,27 +223,31 @@ class nnUNetTrainerColonGenerationAE2(nnUNetTrainerNoDeepSupervision):
             loss_here = np.vstack(losses_tr).mean()
         else:
             loss_here = np.mean(outputs['loss'])
+            dloss_here = np.mean(outputs['dloss'])
 
         # self.logger.log(f'generator loss: {loss_here}, discriminator loss: {dloss_here}, epoch: {self.current_epoch}')
         self.logger.log('train_losses', loss_here, self.current_epoch)
+        self.logger.log('disc_losses', dloss_here, self.current_epoch)
         
     def on_validation_epoch_start(self):
         self.network.eval()
-
+        self.discriminator.eval()
         
     def validation_step(self, batch: dict) -> dict:
-        input_img = batch['data']
+        input_data = batch['data']
         target = batch['target']
-        seg_1 = batch['seg']
+        seg = batch['seg']
+        disconnection_map = batch['disconnection_map']
 
-        # print(f"target shape: {target.shape}, seg_1 shape: {seg_1.shape}, input_data shape: {input_data.shape}")
-        data = torch.cat([input_img, seg_1], dim=1)
+        data = torch.cat((input_data,seg), dim=1)
+        del input_data
+        del seg
         
         data = data.to(self.device, non_blocking=True)
-        if isinstance(target, list):
-            target = [i.to(self.device, non_blocking=True) for i in target]
+        if isinstance(disconnection_map, list):
+            disconnection_map = [i.to(self.device, non_blocking=True) for i in disconnection_map]
         else:
-            target = target.to(self.device, non_blocking=True)
+            disconnection_map = disconnection_map.to(self.device, non_blocking=True)
 
         # Autocast can be annoying
         # If the device_type is 'cpu' then it's slow as heck and needs to be disabled.
@@ -236,10 +262,29 @@ class nnUNetTrainerColonGenerationAE2(nnUNetTrainerNoDeepSupervision):
         if torch.isnan(target).any() or torch.isinf(target).any():
             raise ValueError("Target contains NaN or Inf values")
             
-
-
-        l = self.loss(output, target)
+        # generally target is not one hot encoded. Convert it to one hot encoding
+        if output.shape == disconnection_map.shape:
+            # if this is the case then gt is probably already a one hot encoding
+            target_onehot = disconnection_map
+        else:
+            target_onehot = torch.zeros(output.shape, device=output.device, dtype=torch.bool)
+            if(len(torch.unique(disconnection_map)) ==2):
+                target_onehot.scatter_(1, disconnection_map.long(), 1)
+            target_onehot = target_onehot.float()
         
+        douput = self.discriminator(output)
+        routput = self.discriminator(target_onehot)
+        
+        del data
+
+        l = self.loss(output, disconnection_map)
+        dl = self.bce_loss(douput,routput)
+        
+
+        # we only need the output with the highest output resolution (if DS enabled)
+        if self.enable_deep_supervision:
+            output = output[0]
+            target = target[0]
 
         # the following is needed for online evaluation. Fake dice (green line)
         axes = [0] + list(range(2, output.ndim))
@@ -254,7 +299,7 @@ class nnUNetTrainerColonGenerationAE2(nnUNetTrainerNoDeepSupervision):
             del output_seg
         mask=None
 
-        tp, fp, fn, _ = get_tp_fp_fn_tn(predicted_segmentation_onehot, target, axes=axes, mask=mask)
+        tp, fp, fn, _ = get_tp_fp_fn_tn(predicted_segmentation_onehot, disconnection_map, axes=axes, mask=mask)
 
         tp_hard = tp.detach().cpu().numpy()
         fp_hard = fp.detach().cpu().numpy()
@@ -269,7 +314,7 @@ class nnUNetTrainerColonGenerationAE2(nnUNetTrainerNoDeepSupervision):
             fn_hard = fn_hard[1:]
 
         # TODO - Discriminator loss is not showing
-        return {'loss': l.detach().cpu().numpy(),'tp_hard': tp_hard, 'fp_hard': fp_hard, 'fn_hard': fn_hard}
+        return {'loss': l.detach().cpu().numpy(), 'dloss': dl.detach().cpu().numpy(),'tp_hard': tp_hard, 'fp_hard': fp_hard, 'fn_hard': fn_hard}
         # return {'loss': 0, 'dloss': 0,'tp_hard': 0, 'fp_hard': 0, 'fn_hard': 0}
     
     def on_validation_epoch_end(self, val_outputs: List[dict]):
@@ -278,19 +323,24 @@ class nnUNetTrainerColonGenerationAE2(nnUNetTrainerNoDeepSupervision):
         fp = np.sum(outputs_collated['fp_hard'], 0)
         fn = np.sum(outputs_collated['fn_hard'], 0)
 
+        
         loss_here = np.mean(outputs_collated['loss'])
+        dloss_here = np.mean(outputs_collated['dloss'])
 
         global_dc_per_class = [i for i in [2 * i / (2 * i + j + k) for i, j, k in zip(tp, fp, fn)]]
         mean_fg_dice = np.nanmean(global_dc_per_class)
         self.logger.log('mean_fg_dice', mean_fg_dice, self.current_epoch)
         self.logger.log('dice_per_class_or_region', global_dc_per_class, self.current_epoch)
         self.logger.log('val_losses', loss_here, self.current_epoch)
+        self.logger.log('val_disc_losses',dloss_here,self.current_epoch)
         
     def on_epoch_end(self):
         self.logger.log('epoch_end_timestamps', time(), self.current_epoch)
 
-        self.print_to_log_file('train_loss', np.round(self.logger.my_fantastic_logging['train_losses'][-1], decimals=4))
-        self.print_to_log_file('val_loss', np.round(self.logger.my_fantastic_logging['val_losses'][-1], decimals=4))
+        self.print_to_log_file('generator train_loss', np.round(self.logger.my_fantastic_logging['train_losses'][-1], decimals=4))
+        self.print_to_log_file('discriminator train_loss', np.round(self.logger.my_fantastic_logging['disc_losses'][-1], decimals=4))
+        self.print_to_log_file('generator val_loss', np.round(self.logger.my_fantastic_logging['val_losses'][-1], decimals=4))
+        self.print_to_log_file('discriminator val_loss', np.round(self.logger.my_fantastic_logging['val_disc_losses'][-1], decimals=4))
         self.print_to_log_file('Pseudo dice', [np.round(i, decimals=4) for i in
                                                self.logger.my_fantastic_logging['dice_per_class_or_region'][-1]])
         self.print_to_log_file(
@@ -326,12 +376,12 @@ class nnUNetTrainerColonGenerationAE2(nnUNetTrainerNoDeepSupervision):
                                    "forward pass (where compile is triggered) already has deep supervision disabled. "
                                    "This is exactly what we need in perform_actual_validation")
 
-        # predictor = nnUNetPredictor(tile_step_size=0.5, use_gaussian=True, use_mirroring=True,
-        #                             perform_everything_on_device=True, device=self.device, verbose=False,
-        #                             verbose_preprocessing=False, allow_tqdm=False)
-        # predictor.manual_initialization(self.network, self.plans_manager, self.configuration_manager, None,
-        #                                 self.dataset_json, self.__class__.__name__,
-        #                                 self.inference_allowed_mirroring_axes)
+        predictor = nnUNetPredictor(tile_step_size=0.5, use_gaussian=True, use_mirroring=True,
+                                    perform_everything_on_device=True, device=self.device, verbose=False,
+                                    verbose_preprocessing=False, allow_tqdm=False)
+        predictor.manual_initialization(self.network, self.plans_manager, self.configuration_manager, None,
+                                        self.dataset_json, self.__class__.__name__,
+                                        self.inference_allowed_mirroring_axes)
 
         with multiprocessing.get_context("spawn").Pool(default_num_processes) as segmentation_export_pool:
             worker_list = [i for i in segmentation_export_pool._pool]
@@ -351,7 +401,10 @@ class nnUNetTrainerColonGenerationAE2(nnUNetTrainerNoDeepSupervision):
             dataset_val = self.dataset_class(self.preprocessed_dataset_folder, val_keys,
                                              folder_with_segs_from_previous_stage=self.folder_with_segs_from_previous_stage)
 
+            next_stages = self.configuration_manager.next_stage_names
 
+            if next_stages is not None:
+                _ = [maybe_mkdir_p(join(self.output_folder_base, 'predicted_next_stage', n)) for n in next_stages]
 
             results = []
 
@@ -364,7 +417,7 @@ class nnUNetTrainerColonGenerationAE2(nnUNetTrainerNoDeepSupervision):
                                                                allowed_num_queued=2)
 
                 self.print_to_log_file(f"predicting {k}")
-                data, _, seg_prev, properties, seg2 = dataset_val.load_case(k)
+                data, _, seg_prev, properties, seg2,_ = dataset_val.load_case(k)
 
                 # we do [:] to convert blosc2 to numpy
                 data = data[:]
@@ -374,71 +427,45 @@ class nnUNetTrainerColonGenerationAE2(nnUNetTrainerNoDeepSupervision):
                 # print("data",data.shape)
                 # print("seg2",seg2.shape)
                 
+
+                if self.is_cascaded:
+                    seg_prev = seg_prev[:]
+                    data = np.vstack((data, convert_labelmap_to_one_hot(seg_prev, self.label_manager.foreground_labels,
+                                                                        output_dtype=data.dtype)))
+                with warnings.catch_warnings():
+                    # ignore 'The given NumPy array is not writable' warning
+                    warnings.simplefilter("ignore")
+                    data = torch.from_numpy(data)
+                    seg2 = torch.from_numpy(seg2)
+                    data = torch.cat((data,seg2),dim=0)
+
                 # self.print_to_log_file(f'{k}, shape {data.shape}, rank {self.local_rank}')
                 print(f'{k}, shape {data.shape}, rank {self.local_rank}')
                 output_filename_truncated = join(validation_output_folder, k)
 
-                # prediction = predictor.predict_sliding_window_return_logits(data)
+                prediction = predictor.predict_sliding_window_return_logits(data)
+                prediction = prediction.cpu()
                 
-                # orignal shape
-                original_shape = data.shape[1:]
+                # generally target is not one hot encoded. Convert it to one hot encoding
+                if prediction.shape == seg2.shape:
+                    # if this is the case then gt is probably already a one hot encoding
+                    seg2_onehot = seg2
+                else:
+                    seg2_onehot = torch.zeros(prediction.shape, device=prediction.device, dtype=torch.bool)
+                    if(len(torch.unique(seg2)) ==2):
+                        seg2_onehot.scatter_(0, seg2.long(), 1)
+                seg2_onehot = seg2_onehot.float()
                 
-                # implement prediction pipeline
-                pad = 20
-                target_size = (192,128,128)
-                bbox_lbs, bbox_ubs = get_padded_3d_segmentation_box(seg2[0], pad)
-                seg2_cropped = crop_with_bbox(seg2, bbox_lbs, bbox_ubs)
-                img_cropped = crop_with_bbox(data, bbox_lbs, bbox_ubs)
-                seg2_cropped_shape = seg2_cropped.shape[1:]
-                seg2_resized = resize_data(seg2_cropped,target_size)
-                img_resized = resize_data(img_cropped,target_size)
+                # print('one hot shape and unique: ', seg2_onehot.shape, torch.unique(seg2_onehot))
+                # print(f'prediction shape: {prediction.shape}')
                 
-                with warnings.catch_warnings():
-                    # ignore 'The given NumPy array is not writable' warning
-                    warnings.simplefilter("ignore")
-                    seg2 = torch.from_numpy(seg2_resized)
-                    img = torch.from_numpy(img_resized)
-                    seg2 = seg2.unsqueeze(0).float()  # add batch dimension
-                    img = img.unsqueeze(0).float()  # add batch dimension
-                    # input
-                    input_combined = torch.cat([img, seg2], dim=1)
-                    input_combined = input_combined.to(self.device, non_blocking=True)
-                    
-                print(f"seg2 shape: {seg2.shape}, original shape: {original_shape}, seg_cropped_shape: {seg2_cropped_shape}")
-
-                self.network.eval()
-                with torch.no_grad():
-                    # we do not use autocast here because it is not supported by DDP
-                    prediction = self.network(input_combined)
-                
-                prediction = prediction.cpu().numpy()
-                prediction = np.squeeze(prediction, axis=0)  # remove batch dimension
-                
-                # resize to cropped shape
-                prediction = resize_data(prediction, seg2_cropped_shape)
-                
-                # resize to original shape by placing prediction in the orignal shape
-                output = np.zeros((
-                    prediction.shape[0],
-                    original_shape[0],
-                    original_shape[1],
-                    original_shape[2]), 
-                                  dtype=np.float32)
-                
-                output[:, bbox_lbs[0]:bbox_ubs[0]+1, bbox_lbs[1]:bbox_ubs[1]+1, bbox_lbs[2]:bbox_ubs[2]+1] = prediction
-                
-                output = torch.from_numpy(output)
-                output = output.unsqueeze(0).float()
-                
-                
-                print(f"Prediction shape: {prediction.shape}, Output shape: {output.shape}, ")
-                
+                # sys.exit()
                 
                 # this needs to go into background processes
                 results.append(
                     segmentation_export_pool.starmap_async(
                         export_prediction_from_logits, (
-                            (prediction, properties, self.configuration_manager, self.plans_manager,
+                            (prediction,seg2_onehot, properties, self.configuration_manager, self.plans_manager,
                              self.dataset_json, output_filename_truncated, save_probabilities),
                         )
                     )
@@ -448,7 +475,40 @@ class nnUNetTrainerColonGenerationAE2(nnUNetTrainerNoDeepSupervision):
                 #      self.dataset_json, output_filename_truncated, save_probabilities)
 
                 # if needed, export the softmax prediction for the next stage
-                    
+                if next_stages is not None:
+                    for n in next_stages:
+                        next_stage_config_manager = self.plans_manager.get_configuration(n)
+                        expected_preprocessed_folder = join(nnUNet_preprocessed, self.plans_manager.dataset_name,
+                                                            next_stage_config_manager.data_identifier)
+                        # next stage may have a different dataset class, do not use self.dataset_class
+                        dataset_class = infer_dataset_class(expected_preprocessed_folder)
+
+                        try:
+                            # we do this so that we can use load_case and do not have to hard code how loading training cases is implemented
+                            tmp = dataset_class(expected_preprocessed_folder, [k])
+                            d, _, _, _, _,_ = tmp.load_case(k)
+                        except FileNotFoundError:
+                            self.print_to_log_file(
+                                f"Predicting next stage {n} failed for case {k} because the preprocessed file is missing! "
+                                f"Run the preprocessing for this configuration first!")
+                            continue
+
+                        target_shape = d.shape[1:]
+                        output_folder = join(self.output_folder_base, 'predicted_next_stage', n)
+                        output_file_truncated = join(output_folder, k)
+
+                        # resample_and_save(prediction, target_shape, output_file, self.plans_manager, self.configuration_manager, properties,
+                        #                   self.dataset_json)
+                        results.append(segmentation_export_pool.starmap_async(
+                            resample_and_save, (
+                                (prediction, target_shape, output_file_truncated, self.plans_manager,
+                                 self.configuration_manager,
+                                 properties,
+                                 self.dataset_json,
+                                 default_num_processes,
+                                 dataset_class),
+                            )
+                        ))
                 # if we don't barrier from time to time we will get nccl timeouts for large datasets. Yuck.
                 if self.is_ddp and i < last_barrier_at_idx and (i + 1) % 20 == 0:
                     dist.barrier()
@@ -476,25 +536,3 @@ class nnUNetTrainerColonGenerationAE2(nnUNetTrainerNoDeepSupervision):
         self.set_deep_supervision_enabled(True)
         compute_gaussian.cache_clear()
 
-    def run_training(self):
-        self.on_train_start()
-
-        for epoch in range(self.current_epoch, self.num_epochs):
-            self.on_epoch_start()
-
-            self.on_train_epoch_start()
-            train_outputs = []
-            for batch_id in range(self.num_iterations_per_epoch):
-                train_outputs.append(self.train_step(next(self.dataloader_train)))
-            self.on_train_epoch_end(train_outputs)
-
-            with torch.no_grad():
-                self.on_validation_epoch_start()
-                val_outputs = []
-                for batch_id in range(self.num_val_iterations_per_epoch):
-                    val_outputs.append(self.validation_step(next(self.dataloader_val)))
-                self.on_validation_epoch_end(val_outputs)
-
-            self.on_epoch_end()
-
-        self.on_train_end()
