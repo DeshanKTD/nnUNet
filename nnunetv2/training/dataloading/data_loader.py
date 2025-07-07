@@ -14,6 +14,7 @@ from nnunetv2.training.dataloading.nnunet_dataset import nnUNetDatasetBlosc2
 from nnunetv2.utilities.label_handling.label_handling import LabelManager
 from nnunetv2.utilities.plans_handling.plans_handler import PlansManager
 from acvl_utils.cropping_and_padding.bounding_boxes import crop_and_pad_nd
+from nnunetv2.training.dataloading.utils import crop_with_bbox, get_padded_3d_segmentation_box, resize_data
 
 
 class nnUNetDataLoader(DataLoader):
@@ -48,6 +49,7 @@ class nnUNetDataLoader(DataLoader):
         self.oversample_foreground_percent = oversample_foreground_percent
         self.final_patch_size = final_patch_size
         self.patch_size = patch_size
+        self.target_size = (192,128,128)
         # need_to_pad denotes by how much we need to pad the data so that if we sample a patch of size final_patch_size
         # (which is what the network will get) these patches will also cover the border of the images
         self.need_to_pad = (np.array(patch_size) - np.array(final_patch_size)).astype(int)
@@ -78,14 +80,14 @@ class nnUNetDataLoader(DataLoader):
 
     def determine_shapes(self):
         # load one case
-        data, seg, seg_prev, properties,seg2, disconnection_map = self._data.load_case(self._data.identifiers[0])
+        data, seg, seg_prev, properties,seg2 = self._data.load_case(self._data.identifiers[0])
         num_color_channels = data.shape[0]
 
-        data_shape = (self.batch_size, num_color_channels, *self.patch_size)
+        data_shape = (self.batch_size, num_color_channels, *self.target_size)
         channels_seg = seg.shape[0]
         if seg_prev is not None:
             channels_seg += 1
-        seg_shape = (self.batch_size, channels_seg, *self.patch_size)
+        seg_shape = (self.batch_size, channels_seg, *self.target_size)
         return data_shape, seg_shape
 
     def get_bbox(self, data_shape: np.ndarray, force_fg: bool, class_locations: Union[dict, None],
@@ -177,67 +179,66 @@ class nnUNetDataLoader(DataLoader):
             # (Lung for example)
             force_fg = self.get_do_oversample(j)
 
-            data, seg, seg_prev, properties, seg2, disconnection_map = self._data.load_case(i)
+            data, seg, seg_prev, properties, seg2 = self._data.load_case(i)
 
             # If we are doing the cascade then the segmentation from the previous stage will already have been loaded by
             # self._data.load_case(i) (see nnUNetDataset.load_case)
             shape = data.shape[1:]
 
-            bbox_lbs, bbox_ubs = self.get_bbox(shape, force_fg, properties['class_locations'])
+            # bbox_lbs, bbox_ubs = self.get_bbox(shape, force_fg, properties['class_locations'])
+            pad = 20
+            bbox_lbs, bbox_ubs = get_padded_3d_segmentation_box(seg2[0], pad)
             bbox = [[i, j] for i, j in zip(bbox_lbs, bbox_ubs)]
 
             # use ACVL utils for that. Cleaner.
-            data_all[j] = crop_and_pad_nd(data, bbox, 0)
-            seg_cropped = crop_and_pad_nd(seg, bbox, -1)
-            seg2_cropped = crop_and_pad_nd(seg2,bbox, -1)
-            dism_cropped = crop_and_pad_nd(disconnection_map, bbox,-1)
+            # data_all[j] = crop_and_pad_nd(data, bbox, 0)
+            # seg_cropped = crop_and_pad_nd(seg, bbox, 0)
+            # seg2_cropped = crop_and_pad_nd(seg2,bbox, 0)
+            data_cropped = crop_with_bbox(data, bbox_lbs, bbox_ubs)
+            seg_cropped = crop_with_bbox(seg, bbox_lbs, bbox_ubs)
+            seg2_cropped = crop_with_bbox(seg2, bbox_lbs, bbox_ubs)
             
-            if seg_prev is not None:
-                seg_cropped = np.vstack((seg_cropped, crop_and_pad_nd(seg_prev, bbox, -1)[None]))
-            seg_all[j] = seg_cropped
-            seg2_all[j] = seg2_cropped
-            disconnection_map_all[j] = dism_cropped
-
-        if self.patch_size_was_2d:
-            data_all = data_all[:, :, 0]
-            seg_all = seg_all[:, :, 0]
+            data_resized = resize_data(data_cropped, self.target_size)
+            seg_resized = resize_data(seg_cropped, self.target_size)
+            seg2_resized = resize_data(seg2_cropped, self.target_size)
+            
+            del data_cropped, seg_cropped, seg2_cropped
+            
+            data_all[j] = data_resized
+            seg_all[j] = seg_resized
+            seg2_all[j] = seg2_resized
 
         if self.transforms is not None:
             with torch.no_grad():
                 with threadpool_limits(limits=1, user_api=None):
                     data_all = torch.from_numpy(data_all).float()
                     seg_all = torch.from_numpy(seg_all).to(torch.int16)
-                    seg2_all = torch.from_numpy(seg2_all).to(torch.int16)
-                    disconnection_map_all = torch.from_numpy(disconnection_map_all).to(torch.int16)
+                    seg2_all = torch.from_numpy(seg2_all).float()
+    
                     images = []
                     segs = []
                     seg2s = []
-                    disconnection_maps = []
                     for b in range(self.batch_size):
                         tmp = self.transforms(
                             **{'image': data_all[b], 
                                 'segmentation': seg_all[b], 
                                 'segmentation_out_1': seg2_all[b],
-                                'disconnection_map': disconnection_map_all[b]
                             })
                         images.append(tmp['image'])
                         segs.append(tmp['segmentation'])
                         seg2s.append(tmp['segmentation_out_1'])
-                        disconnection_maps.append(tmp['disconnection_map'])
                         
                     data_all = torch.stack(images)
                     if isinstance(segs[0], list):
                         seg_all = [torch.stack([s[i] for s in segs]) for i in range(len(segs[0]))]
                         seg2_all = [torch.stack([s[i] for s in seg2s]) for i in range(len(seg2s[0]))]
-                        disconnection_map_all = [torch.stack([s[i] for s in disconnection_maps]) for i in range(len(disconnection_maps[0]))]
                     else:
                         seg_all = torch.stack(segs)
                         seg2_all = torch.stack(seg2s)
-                        disconnection_map_all = torch.stack(disconnection_maps)
-                    del segs, images, seg2s, disconnection_maps
-            return {'data': data_all, 'target': seg_all, 'seg': seg2_all,'disconnection_map':disconnection_map_all, 'keys': selected_keys}
+                    del segs, images, seg2s
+            return {'data': data_all, 'target': seg_all, 'seg': seg2_all, 'keys': selected_keys}
 
-        return {'data': data_all, 'target': seg_all,'seg': seg2_all,'disconnection_map':disconnection_map_all, 'keys': selected_keys}
+        return {'data': data_all, 'target': seg_all,'seg': seg2_all, 'keys': selected_keys}
 
 
 if __name__ == '__main__':
