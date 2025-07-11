@@ -3,7 +3,8 @@ import torch
 from torch import autocast
 import torch.nn as nn
 from torch import distributed as dist
-from network_architectures.networks.auto_encoder.basic.auto_encoder import AutoEncoder
+# from network_architectures.networks.auto_encoder.basic.auto_encoder import AutoEncoder
+from network_architectures.networks.unet.se_unet.se_unet_3d import SEUNet3D
 from batchgenerators.utilities.file_and_folder_operations import join, load_json, isfile, save_json, maybe_mkdir_p
 from typing import List, Tuple, Union
 import numpy as np
@@ -13,6 +14,7 @@ import warnings
 import sys
 
 from nnunetv2.configuration import ANISO_THRESHOLD, default_num_processes
+from nnunetv2.training.data_augmentation.custom_transforms.colon.random_disconnection_transform import RandomDisconnectionsTransform
 from nnunetv2.training.dataloading.nnunet_dataset import infer_dataset_class
 from nnunetv2.training.loss.dice import get_tp_fp_fn_tn
 from nnunetv2.training.lr_scheduler.polylr import PolyLRScheduler
@@ -56,7 +58,7 @@ class nnUNetTrainerColonDisconSL(nnUNetTrainerNoDeepSupervision):
                                    enable_deep_supervision: bool = False) -> nn.Module:
 
         print("number of output channels: ", num_output_channels)
-        model = AutoEncoder(in_channels=num_input_channels, out_channels=num_output_channels)
+        model = SEUNet3D(in_channels=2, out_channels=num_output_channels,feature_channels=[8,16,32,64])
         
         return model
     
@@ -83,43 +85,15 @@ class nnUNetTrainerColonDisconSL(nnUNetTrainerNoDeepSupervision):
             patch_size_spatial = patch_size
             ignore_axes = None
             
-        # transforms.append(
-        #     SpatialTransform(
-        #         patch_size_spatial, patch_center_dist_from_border=0, random_crop=False, p_elastic_deform=0,
-        #         p_rotation=0.2,
-        #         rotation=rotation_for_DA, p_scaling=0.2, scaling=(0.7, 1.4), p_synchronize_scaling_across_axes=1,
-        #         bg_style_seg_sampling=False  # , mode_seg='nearest'
-        #     )
-        # )
 
-        
-
-        # if mirror_axes is not None and len(mirror_axes) > 0:
-        #     transforms.append(
-        #         MirrorTransform(
-        #             allowed_axes=mirror_axes
-        #         )
-        #     )
-
-        # if use_mask_for_norm is not None and any(use_mask_for_norm):
-        #     transforms.append(MaskImageTransform(
-        #         apply_to_channels=[i for i in range(len(use_mask_for_norm)) if use_mask_for_norm[i]],
-        #         channel_idx_in_seg=0,
-        #         set_outside_to=0,
-        #     ))
+        transforms.append(
+                RandomDisconnectionsTransform()
+        )
 
         transforms.append(
             RemoveLabelTansform(-1, 0)
         )
         
-        # if regions is not None:
-        #     # the ignore label must also be converted
-        #     transforms.append(
-        #         ConvertSegmentationToRegionsTransform(
-        #             regions=list(regions) + [ignore_label] if ignore_label is not None else regions,
-        #             channel_in_seg=0
-        #         )
-        #     )
 
         if deep_supervision_scales is not None:
             transforms.append(DownsampleSegForDSTransform(ds_scales=deep_supervision_scales))
@@ -158,11 +132,11 @@ class nnUNetTrainerColonDisconSL(nnUNetTrainerNoDeepSupervision):
     def train_step(self,batch: dict) -> dict:
         input_img = batch['data']
         target = batch['target']
-        seg_1 = batch['seg']
+        disconnection_map = batch['disconnection_map']
         
-        # print(f"target shape: {target.shape}, seg_1 shape: {seg_1.shape}, input_img shape: {input_img.shape}")
+        data = torch.cat([input_img, disconnection_map], dim=1)
         
-        data = seg_1.to(self.device, non_blocking=True)
+        data = disconnection_map.to(self.device, non_blocking=True)
         target = target.to(self.device, non_blocking=True)
         
         
@@ -202,15 +176,15 @@ class nnUNetTrainerColonDisconSL(nnUNetTrainerNoDeepSupervision):
     def validation_step(self, batch: dict) -> dict:
         input_data = batch['data']
         target = batch['target']
-        seg_1 = batch['seg']
+        disconnection_map = batch['disconnection_map']
+        # disconnection_map = batch['disconnection_map']
 
-        # print(f"target shape: {target.shape}, seg_1 shape: {seg_1.shape}, input_data shape: {input_data.shape}")
+        # combine input data and disconnection map
+        data = torch.cat([input_data, disconnection_map], dim=1)
         
-        data = seg_1.to(self.device, non_blocking=True)
-        if isinstance(target, list):
-            target = [i.to(self.device, non_blocking=True) for i in target]
-        else:
-            target = target.to(self.device, non_blocking=True)
+        # assgin device
+        data = data.to(self.device, non_blocking=True)
+        target = target.to(self.device, non_blocking=True)
 
         # Autocast can be annoying
         # If the device_type is 'cpu' then it's slow as heck and needs to be disabled.
@@ -225,8 +199,6 @@ class nnUNetTrainerColonDisconSL(nnUNetTrainerNoDeepSupervision):
         if torch.isnan(target).any() or torch.isinf(target).any():
             raise ValueError("Target contains NaN or Inf values")
             
-
-
         l = self.loss(output, target)
         
 
@@ -377,22 +349,28 @@ class nnUNetTrainerColonDisconSL(nnUNetTrainerNoDeepSupervision):
                 target_size = (192,128,128)
                 bbox_lbs, bbox_ubs = get_padded_3d_segmentation_box(seg2[0], pad)
                 seg_cropped = crop_with_bbox(seg2, bbox_lbs, bbox_ubs)
+                data_cropped = crop_with_bbox(data, bbox_lbs, bbox_ubs)
                 seg_cropped_shape = seg_cropped.shape[1:]
                 seg2_resized = resize_data(seg_cropped,target_size)
+                data_resized = resize_data(data_cropped,target_size)
                 
                 with warnings.catch_warnings():
                     # ignore 'The given NumPy array is not writable' warning
                     warnings.simplefilter("ignore")
                     seg2 = torch.from_numpy(seg2_resized)
                     seg2 = seg2.unsqueeze(0).float()  # add batch dimension
-                    seg2 = seg2.to(self.device, non_blocking=True)
+                    data = torch.from_numpy(data_resized)
+                    data = data.unsqueeze(0).float()  # add batch dimension
                     
-                print(f"seg2 shape: {seg2.shape}, original shape: {original_shape}, seg_cropped_shape: {seg_cropped_shape}")
+                    data = torch.cat([data, seg2], dim=1)
+                    data = data.to(self.device, non_blocking=True)
+                    
+                # print(f"seg2 shape: {seg2.shape}, original shape: {original_shape}, seg_cropped_shape: {seg_cropped_shape}")
 
                 self.network.eval()
                 with torch.no_grad():
                     # we do not use autocast here because it is not supported by DDP
-                    prediction = self.network(seg2)
+                    prediction = self.network(data)
                 
                 prediction = prediction.cpu().numpy()
                 prediction = np.squeeze(prediction, axis=0)  # remove batch dimension

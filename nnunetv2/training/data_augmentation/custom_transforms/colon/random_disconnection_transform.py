@@ -10,12 +10,15 @@ from batchgeneratorsv2.transforms.base.basic_transform import BasicTransform
 
 
 class RandomDisconnectionsTransform(BasicTransform):
-    def __init__(self):
+    def __init__(self, min_rad, max_rad, fill_voxels):
         """
         Calculates the skeleton of the segmentation (plus an optional 2 px tube around it) 
         and adds it to the dict with the key "skel"
         """
         super().__init__()
+        self.min_rad = min_rad
+        self.max_rad = max_rad
+        self.fill_voxels = fill_voxels  # Number of voxels to fill around the skeleton
 
     
     def apply(self, data_dict, **params):
@@ -82,7 +85,7 @@ class RandomDisconnectionsTransform(BasicTransform):
         random_index = np.random.randint(0, len(skel_coords))
         return skel_coords[random_index]
         
-    def _create_random_blob(self, seed_point: np.ndarray, shape: Tuple[int], max_size: int = 150) -> np.ndarray:
+    def _create_random_blob(self, seed_point: np.ndarray, shape: Tuple[int]) -> np.ndarray:
         """
         Creates a randomly shaped, filled blob around a seed point by region growing.
 
@@ -108,7 +111,7 @@ class RandomDisconnectionsTransform(BasicTransform):
             [0, 0, 1], [0, 0, -1]
         ])
 
-        while queue and count < 20000:
+        while queue and count < self.fill_voxels:
             current = queue.popleft()
             x, y, z = current
 
@@ -137,8 +140,7 @@ class RandomDisconnectionsTransform(BasicTransform):
 
         return blob
     
-    def _create_random_rectangle(self, seed_point: np.ndarray, shape: Tuple[int], 
-                             max_extent: Tuple[int, int, int] = (70, 70, 70)) -> np.ndarray:
+    def _create_random_rectangle(self, seed_point: np.ndarray, shape: Tuple[int]) -> np.ndarray:
         """
         Creates a randomly sized 3D rectangular block around a seed point.
 
@@ -154,9 +156,9 @@ class RandomDisconnectionsTransform(BasicTransform):
         x, y, z = seed_point
 
         # Random sizes (at least 1, up to max_extent)
-        size_x = np.random.randint(20, max_extent[0])
-        size_y = np.random.randint(20, max_extent[1])
-        size_z = np.random.randint(20, max_extent[2])
+        size_x = np.random.randint(self.min_rad*2, self.max_rad*2)
+        size_y = np.random.randint(self.min_rad*2, self.max_rad*2)
+        size_z = np.random.randint(self.min_rad*2, self.max_rad*2)
 
         # Compute bounding box
         x0 = max(0, x - size_x // 2)
@@ -188,9 +190,9 @@ class RandomDisconnectionsTransform(BasicTransform):
         cx, cy, cz = seed_point
 
         # Random radii in each axis (at least 1)
-        rx = np.random.randint(15, max_radius[0])
-        ry = np.random.randint(15, max_radius[1])
-        rz = np.random.randint(15, max_radius[2])
+        rx = np.random.randint(self.min_rad, self.max_rad)
+        ry = np.random.randint(self.min_rad, self.max_rad)
+        rz = np.random.randint(self.min_rad, self.max_rad)
 
         # Bounding box
         x0 = max(0, cx - rx)

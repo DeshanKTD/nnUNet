@@ -218,6 +218,7 @@ class nnUNetDataLoader(DataLoader):
                     images = []
                     segs = []
                     seg2s = []
+                    disconnection_maps = []
                     for b in range(self.batch_size):
                         tmp = self.transforms(
                             **{'image': data_all[b], 
@@ -227,18 +228,24 @@ class nnUNetDataLoader(DataLoader):
                         images.append(tmp['image'])
                         segs.append(tmp['segmentation'])
                         seg2s.append(tmp['segmentation_out_1'])
+                        if 'disconnection_map' in tmp:
+                            disconnection_maps.append(tmp['disconnection_map'])
+                        else:
+                            disconnection_maps.append(torch.zeros_like(tmp['segmentation']))
                         
                     data_all = torch.stack(images)
                     if isinstance(segs[0], list):
                         seg_all = [torch.stack([s[i] for s in segs]) for i in range(len(segs[0]))]
                         seg2_all = [torch.stack([s[i] for s in seg2s]) for i in range(len(seg2s[0]))]
+                        disconnection_map_all = [torch.stack([s[i] for s in disconnection_maps]) for i in range(len(disconnection_maps[0]))]
                     else:
                         seg_all = torch.stack(segs)
                         seg2_all = torch.stack(seg2s)
+                        disconnection_map_all = torch.stack(disconnection_maps)
                     del segs, images, seg2s
-            return {'data': data_all, 'target': seg_all, 'seg': seg2_all, 'keys': selected_keys}
+            return {'data': data_all, 'target': seg_all, 'seg': seg2_all, 'disconnection_map': disconnection_map_all, 'keys': selected_keys}
 
-        return {'data': data_all, 'target': seg_all,'seg': seg2_all, 'keys': selected_keys}
+        return {'data': data_all, 'target': seg_all,'seg': seg2_all, 'disconnection_map': disconnection_map_all,  'keys': selected_keys}
 
 
 if __name__ == '__main__':

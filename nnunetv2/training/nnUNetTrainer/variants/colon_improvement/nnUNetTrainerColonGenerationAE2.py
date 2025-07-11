@@ -37,7 +37,8 @@ This class implements a nnUNet trainer for the Colon Disconnection improvement t
 It inherits from nnUNetTrainerNoDeepSupervision and overrides methods to set up the network
 
 Experiment 03 - Task 04 - Colon Generation AE
-Input - 1 channel - segmentation from previous stage
+Input - 1 channel - segmentation from previous stage and CT scan
+Network - AutoEncoder with 2 input channels (segmentation and CT scan) 
 Output - 1 channel - segmentation mask
 Loss - Dice and BCE loss 
 Evaluvated against the ground truth segmentation mask
