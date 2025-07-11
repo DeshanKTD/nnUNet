@@ -7,6 +7,7 @@ from skimage.morphology import skeletonize, dilation
 from scipy.ndimage import generate_binary_structure, binary_dilation
 from skimage.morphology import ball
 from batchgeneratorsv2.transforms.base.basic_transform import BasicTransform
+from collections import deque
 
 
 class RandomDisconnectionsTransform(BasicTransform):

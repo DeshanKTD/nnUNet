@@ -44,7 +44,7 @@ class nnUNetTrainerColonDisconSL(nnUNetTrainerNoDeepSupervision):
         self.initial_dlr = 1e-4
         self.grad_scaler = None
         self.weight_decay = 0.01
-        self.num_epochs = 500
+        self.num_epochs = 1000
         self.lambda_adv = 0.01  # You can tune this
         self.configuration_manager.configuration['patch_size'] = [192,192,192]
         
@@ -87,7 +87,7 @@ class nnUNetTrainerColonDisconSL(nnUNetTrainerNoDeepSupervision):
             
 
         transforms.append(
-                RandomDisconnectionsTransform()
+                RandomDisconnectionsTransform(min_rad=10, max_rad=40, fill_voxels=15000)
         )
 
         transforms.append(
@@ -109,6 +109,11 @@ class nnUNetTrainerColonDisconSL(nnUNetTrainerNoDeepSupervision):
             ignore_label: int = None,
     ) -> BasicTransform:
         transforms = []
+        
+        transforms.append(
+                RandomDisconnectionsTransform(min_rad=10, max_rad=40, fill_voxels=15000)
+        )
+        
         transforms.append(
             RemoveLabelTansform(-1, 0)
         )
@@ -136,9 +141,12 @@ class nnUNetTrainerColonDisconSL(nnUNetTrainerNoDeepSupervision):
         
         data = torch.cat([input_img, disconnection_map], dim=1)
         
-        data = disconnection_map.to(self.device, non_blocking=True)
+        data = data.to(self.device, non_blocking=True)
         target = target.to(self.device, non_blocking=True)
         
+        data = data.float()
+        
+        print(f"data shape: {data.shape}, target shape: {target.shape}")
         
         # set generator to train and discriminator to eval
         self.network.train()
@@ -185,6 +193,8 @@ class nnUNetTrainerColonDisconSL(nnUNetTrainerNoDeepSupervision):
         # assgin device
         data = data.to(self.device, non_blocking=True)
         target = target.to(self.device, non_blocking=True)
+        
+        data = data.float()
 
         # Autocast can be annoying
         # If the device_type is 'cpu' then it's slow as heck and needs to be disabled.
@@ -364,6 +374,8 @@ class nnUNetTrainerColonDisconSL(nnUNetTrainerNoDeepSupervision):
                     
                     data = torch.cat([data, seg2], dim=1)
                     data = data.to(self.device, non_blocking=True)
+                    
+                    data = data.float()
                     
                 # print(f"seg2 shape: {seg2.shape}, original shape: {original_shape}, seg_cropped_shape: {seg_cropped_shape}")
 
