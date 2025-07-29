@@ -390,6 +390,8 @@ class nnUNetTrainerColonDisconSL(nnUNetTrainerNoDeepSupervision):
                 # resize to cropped shape
                 prediction = resize_data(prediction, seg_cropped_shape)
                 
+                print(f"Prediction shape after resize: {prediction.shape}, Original Shape: {original_shape}")
+                
                 output = np.zeros((
                     prediction.shape[0],
                     original_shape[0],
