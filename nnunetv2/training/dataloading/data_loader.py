@@ -49,7 +49,7 @@ class nnUNetDataLoader(DataLoader):
         self.oversample_foreground_percent = oversample_foreground_percent
         self.final_patch_size = final_patch_size
         self.patch_size = patch_size
-        self.target_size = (192,128,128)
+        self.target_size = (128,128,192)
         # need_to_pad denotes by how much we need to pad the data so that if we sample a patch of size final_patch_size
         # (which is what the network will get) these patches will also cover the border of the images
         self.need_to_pad = (np.array(patch_size) - np.array(final_patch_size)).astype(int)
@@ -168,6 +168,8 @@ class nnUNetDataLoader(DataLoader):
 
     def generate_train_batch(self):
         selected_keys = self.get_indices()
+        
+        # print(f"data shape: {self.data_shape}, seg shape: {self.seg_shape}, batch size: {self.batch_size}")
         # preallocate memory for data and seg
         data_all = np.zeros(self.data_shape, dtype=np.float32)
         seg_all = np.zeros(self.seg_shape, dtype=np.int16)
@@ -184,6 +186,7 @@ class nnUNetDataLoader(DataLoader):
             # If we are doing the cascade then the segmentation from the previous stage will already have been loaded by
             # self._data.load_case(i) (see nnUNetDataset.load_case)
             shape = data.shape[1:]
+            # print('Shape of data: ', data.shape)
 
             # bbox_lbs, bbox_ubs = self.get_bbox(shape, force_fg, properties['class_locations'])
             pad = 20

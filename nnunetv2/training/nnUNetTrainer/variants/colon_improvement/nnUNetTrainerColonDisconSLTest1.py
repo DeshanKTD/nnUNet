@@ -34,8 +34,10 @@ from batchgeneratorsv2.transforms.utils.remove_label import RemoveLabelTansform
 from batchgeneratorsv2.transforms.utils.compose import ComposeTransforms
 from nnunetv2.training.dataloading.utils import crop_with_bbox, get_padded_3d_segmentation_box, resize_data
 
+import torch.nn.functional as F
 
-class nnUNetTrainerColonDisconSL(nnUNetTrainerNoDeepSupervision):
+
+class nnUNetTrainerColonDisconSLTest1(nnUNetTrainerNoDeepSupervision):
     def __init__(self, plans: dict, configuration: str, fold: int, dataset_json: dict,
                  device: torch.device = torch.device('cuda')):
         super().__init__(plans, configuration, fold, dataset_json, device)
@@ -44,7 +46,7 @@ class nnUNetTrainerColonDisconSL(nnUNetTrainerNoDeepSupervision):
         self.initial_dlr = 1e-4
         self.grad_scaler = None
         self.weight_decay = 0.01
-        self.num_epochs = 1000
+        self.num_epochs = 1
         self.lambda_adv = 0.01  # You can tune this
         self.configuration_manager.configuration['patch_size'] = [192,192,192]
         
@@ -285,8 +287,6 @@ class nnUNetTrainerColonDisconSL(nnUNetTrainerNoDeepSupervision):
 
     def perform_actual_validation(self, save_probabilities: bool = False):
         self.set_deep_supervision_enabled(False)
-        self.load_checkpoint(join(self.output_folder, 'checkpoint_best.pth'))
-        
         self.network.eval()
 
         if self.is_ddp and self.batch_size == 1 and self.enable_deep_supervision and self._do_i_compile():
@@ -305,9 +305,6 @@ class nnUNetTrainerColonDisconSL(nnUNetTrainerNoDeepSupervision):
         # predictor.manual_initialization(self.network, self.plans_manager, self.configuration_manager, None,
         #                                 self.dataset_json, self.__class__.__name__,
         #                                 self.inference_allowed_mirroring_axes)
-        
- 
-        
 
         with multiprocessing.get_context("spawn").Pool(default_num_processes) as segmentation_export_pool:
             worker_list = [i for i in segmentation_export_pool._pool]
@@ -340,11 +337,12 @@ class nnUNetTrainerColonDisconSL(nnUNetTrainerNoDeepSupervision):
                                                                allowed_num_queued=2)
 
                 self.print_to_log_file(f"predicting {k}")
-                data, _, seg_prev, properties, seg2 = dataset_val.load_case(k)
+                data, target, seg_prev, properties, seg2 = dataset_val.load_case(k)
 
                 # we do [:] to convert blosc2 to numpy
                 data = data[:]
                 seg2 = seg2[:]
+                target = target[:]
                 
                 # Combine data and seg
                 # print("data",data.shape)
@@ -362,67 +360,85 @@ class nnUNetTrainerColonDisconSL(nnUNetTrainerNoDeepSupervision):
                 # implement prediction pipeline
                 pad = 20
                 target_size = (128,128,192)
-                bbox_lbs, bbox_ubs = get_padded_3d_segmentation_box(seg2[0], pad)
-                seg_cropped = crop_with_bbox(seg2, bbox_lbs, bbox_ubs)
-                data_cropped = crop_with_bbox(data, bbox_lbs, bbox_ubs)
-                seg_cropped_shape = seg_cropped.shape[1:]
-                seg2_resized = resize_data(seg_cropped,target_size,order=0)
-                data_resized = resize_data(data_cropped,target_size,order=1)
                 
-                print(f"seg2 shape: {seg2.shape}")
-                print(f"bbox_lbs: {bbox_lbs}, bbox_ubs: {bbox_ubs}")
-                print(f"seg_cropped shape: {seg_cropped.shape}")
-                print(f"target_size: {target_size}")
-                print(f"seg2_resized shape: {seg2_resized.shape}")
+                # check resizing is working without a issue without croppping - 
+                # bbox_lbs, bbox_ubs = get_padded_3d_segmentation_box(seg2[0], pad)
+                # seg_cropped = crop_with_bbox(seg2, bbox_lbs, bbox_ubs)
+                # data_cropped = crop_with_bbox(data, bbox_lbs, bbox_ubs)
+                # target_cropped = crop_with_bbox(target, bbox_lbs, bbox_ubs)
+                # target_cropped_shape = target_cropped.shape[1:]
+                # seg_cropped_shape = seg_cropped.shape[1:]
+                # seg2_resized = resize_data(seg_cropped,target_size)
+                # data_resized = resize_data(data_cropped,target_size)
+                # target_resized = resize_data(target_cropped,target_size,order=0)
+                target_resized = resize_data(target,target_size,order=0)
+                # target_resized = resize_data(target, target_size,order=0)
+                
+                print(f"target shape: {target.shape}")
+                # print(f"bbox_lbs: {bbox_lbs}, bbox_ubs: {bbox_ubs}")
+                # print(f"target cropped shape: {target_cropped.shape}")
+                print(f"target resized shape: {target_resized.shape}")
+                
+                
                 
                 with warnings.catch_warnings():
                     # ignore 'The given NumPy array is not writable' warning
                     warnings.simplefilter("ignore")
-                    seg2 = torch.from_numpy(seg2_resized)
-                    seg2 = seg2.unsqueeze(0).float()  # add batch dimension
-                    data = torch.from_numpy(data_resized)
-                    data = data.unsqueeze(0).float()  # add batch dimension
+                    # seg2 = torch.from_numpy(seg2_resized)
+                    # seg2 = seg2.unsqueeze(0).float()  # add batch dimension
+                    # data = torch.from_numpy(data_resized)
+                    # data = data.unsqueeze(0).float()  # add batch dimension
+                    target = torch.from_numpy(target_resized).long()
+                    target_onehot = F.one_hot(target, num_classes=2)
+
+                    target_onehot = target_onehot.permute(0,4,1,2,3)  # change to (batch, channels, x, y, z)
+                    # target = target_onehot.unsqueeze(0).float()  # add batch dimension
                     
-                    data = torch.cat([data, seg2], dim=1)
-                    data = data.to(self.device, non_blocking=True)
+                    # data = torch.cat([data, seg2], dim=1)
+                    # data = data.to(self.device, non_blocking=True)
                     
-                    data = data.float()
+                    # data = data.float()
                     
                 # print(f"seg2 shape: {seg2.shape}, original shape: {original_shape}, seg_cropped_shape: {seg_cropped_shape}")
-                print(f"input data shape: {data.shape}")
 
-                self.network.eval()
-                with torch.no_grad():
+                # self.network.eval()
+                # with torch.no_grad():
                     # we do not use autocast here because it is not supported by DDP
-                    prediction = self.network(data)
+                    # prediction = self.network(data)
                 
-                prediction = prediction.cpu().numpy()
+                # print(f"Prediction shape: {prediction.shape}, target onehot shape: {target_onehot.shape}")
+                
+                # prediction = prediction.cpu().numpy()
+                prediction = target_onehot.cpu().numpy()
                 prediction = np.squeeze(prediction, axis=0)  # remove batch dimension
                 
-                print(f"Prediction shape before resize: {prediction.shape},")
-                
                 # resize to cropped shape
-                prediction = resize_data(prediction, seg_cropped_shape,order=1)
+                # prediction = resize_data(prediction, seg_cropped_shape)
+                # new shape 
+                # new_shape = ( original_shape[0], original_shape[1],original_shape[2])
+                # print(len(prediction.shape), len(new_shape))
+                # print(f"original shape: {original_shape},Prediction original shape: {prediction.shape}, new shape: {new_shape}")
+                # prediction = resize_data(prediction, target_cropped_shape,order=0)
+                prediction = resize_data(prediction, original_shape,order=0)
                 
-                print(f"Prediction shape after resize: {prediction.shape}, ")
+                print(f"Prediction resized shape: {prediction.shape}")
                 
-                output = np.zeros((
-                    prediction.shape[0],
-                    original_shape[0],
-                    original_shape[1],
-                    original_shape[2]), 
-                                  dtype=np.float32)
-                print(f"Output shape: {output.shape},")
+                # output = np.zeros((
+                #     prediction.shape[0],
+                #     original_shape[0],
+                #     original_shape[1],
+                #     original_shape[2]), 
+                #                   dtype=np.float32)
                 
                 s0, s1, s2 = prediction.shape[1:]
-                output[:, bbox_lbs[0]:bbox_lbs[0]+s0, bbox_lbs[1]:bbox_lbs[1]+s1, bbox_lbs[2]:bbox_lbs[2]+s2] = prediction
-
+                # output[:, bbox_lbs[0]:bbox_lbs[0]+s0, bbox_lbs[1]:bbox_lbs[1]+s1, bbox_lbs[2]:bbox_lbs[2]+s2] = prediction
+                output = prediction
                 
                 output = torch.from_numpy(output)
                 output = output.unsqueeze(0).float()
                 
                 
-                print(f"Prediction shape: {prediction.shape}, Output shape: {output.shape}, ")
+                print(f"Output shape: {output.shape}, ")
                 
                 
                 # this needs to go into background processes

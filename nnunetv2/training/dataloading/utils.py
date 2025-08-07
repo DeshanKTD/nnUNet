@@ -72,17 +72,17 @@ def unpack_dataset(folder: str, unpack_segmentation: bool = True, overwrite_exis
                   )
 
 
-def get_padded_3d_segmentation_box(segmentation_map, pad=0):
+def get_padded_3d_segmentation_box(segmentation_map, target_size, pad=0):
     """
     Returns the min and max coordinates of the non-zero region in a 3D segmentation map,
     padded by a given number of voxels in each direction (with bounds checking).
     
     Parameters:
-        segmentation_map (np.ndarray): 3D ndarray (Z, Y, X)
+        segmentation_map (np.ndarray): 3D ndarray (X, Y, Z)
         pad (int): Number of voxels to pad around the bounding box
     
     Returns:
-        tuple or None: (min_coord, max_coord), where each is a (z, y, x) tuple
+        tuple or None: (min_coord, max_coord), where each is a (x, y, z) tuple
     """
     assert segmentation_map.ndim == 3, "Expected a 3D array"
     assert pad >= 0, "Pad must be non-negative"
@@ -102,27 +102,39 @@ def get_padded_3d_segmentation_box(segmentation_map, pad=0):
     return tuple(min_padded), tuple(max_padded)
 
 def crop_with_bbox(segmentation_map, min_coord, max_coord):
-    z_min, y_min, x_min = min_coord
-    z_max, y_max, x_max = max_coord
+    x_min, y_min, z_min  = min_coord
+    x_max, y_max, z_max = max_coord
     
-    cropped = segmentation_map[:,z_min:z_max+1, y_min:y_max+1, x_min:x_max+1]
+    cropped = segmentation_map[:, x_min:x_max+1,y_min:y_max+1, z_min:z_max+1]
     return cropped
 
-def resize_data(data: np.ndarray, target_shape: Tuple[int, ...]) -> np.ndarray:
-    assert data.ndim == 4, "Expected input of shape (C, Z, Y, X)"
-    assert len(target_shape) == 3, "target_size should be (Z, Y, X)"
+def resize_data(data: np.ndarray, target_shape: Tuple[int, ...],order: int =1) -> np.ndarray:
+    assert data.ndim == 4, "Expected input of shape (C, X, Y, Z)"
+    assert len(target_shape) == 3, "target_size should be (X, Y, Z)"
     
-    c, z, y, x = data.shape
-    target_z, target_y, target_x = target_shape
+    c, x, y, z = data.shape
+    target_x, target_y , target_z,  = target_shape
     
-    zoom_factors = (target_z / z, target_y / y, target_x / x)
+    zoom_factors = ( target_x / x, target_y / y,  target_z / z)
     
     resized = np.stack([
-        zoom(data[i], zoom_factors, order=1)  # linear interpolation
+        zoom(data[i], zoom_factors, order=order)  # linear interpolation
         for i in range(c)
     ])
     
     return resized
+
+def insert_prediction_safe(output, prediction, bbox_lbs):
+    c, dx, dy, dz = prediction.shape
+    x, y, z = bbox_lbs
+    x_end = min(x + dx, output.shape[1])
+    y_end = min(y + dy, output.shape[2])
+    z_end = min(z + dz, output.shape[3])
+    dx_crop = x_end - x
+    dy_crop = y_end - y
+    dz_crop = z_end - z
+    output[:, x:x_end, y:y_end, z:z_end] = prediction[:, :dx_crop, :dy_crop, :dz_crop]
+    return output
 
 if __name__ == '__main__':
     unpack_dataset('/media/fabian/data/nnUNet_preprocessed/Dataset002_Heart/2d')
