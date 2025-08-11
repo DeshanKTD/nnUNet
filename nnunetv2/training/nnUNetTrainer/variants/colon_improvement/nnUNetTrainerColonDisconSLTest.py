@@ -33,7 +33,7 @@ from batchgeneratorsv2.transforms.base.basic_transform import BasicTransform
 from batchgeneratorsv2.transforms.spatial.mirroring import MirrorTransform
 from batchgeneratorsv2.transforms.utils.remove_label import RemoveLabelTansform
 from batchgeneratorsv2.transforms.utils.compose import ComposeTransforms
-from nnunetv2.training.dataloading.utils import crop_with_bbox, get_padded_3d_segmentation_box, resize_data, insert_prediction_safe
+from nnunetv2.training.dataloading.utils import crop_with_bbox, get_padded_3d_segmentation_box, get_padded_3d_square_xy_segmentation_box, resize_data
 
 import torch.nn.functional as F
 
@@ -367,7 +367,7 @@ class nnUNetTrainerColonDisconSLTest(nnUNetTrainerNoDeepSupervision):
                 print(f"target sum: {target_sum}")
                 
                 # check resizing is working without a issue without croppping - 
-                bbox_lbs, bbox_ubs = get_padded_3d_segmentation_box(target[0], pad)
+                bbox_lbs, bbox_ubs = get_padded_3d_square_xy_segmentation_box(target[0],target_size, pad)
                 # bbox_lbs = (0,0,0)
                 # bbox_ubs = (original_shape[0]-1, original_shape[1]-1, original_shape[2]-1)
                 # seg_cropped = crop_with_bbox(seg2, bbox_lbs, bbox_ubs)
@@ -382,7 +382,7 @@ class nnUNetTrainerColonDisconSLTest(nnUNetTrainerNoDeepSupervision):
                 # data_resized = resize_data(data_cropped,target_size)
                 # target_resized = resize_data(target_cropped,target_size,order=0)
                 # target_resized = resize_data(target_cropped,target_size,order=0)
-                target_resized = resample_data_or_seg(target_cropped, target_size, is_seg=True)
+                target_resized = resample_data_or_seg(target_cropped, target_size, is_seg=True,order=1,order_z=0,do_separate_z=False)
                 # target_resized = resize_data(target, target_size,order=0)
                 
                 print(f"target shape: {target.shape}")
@@ -432,11 +432,11 @@ class nnUNetTrainerColonDisconSLTest(nnUNetTrainerNoDeepSupervision):
                 # print(len(prediction.shape), len(new_shape))
                 # print(f"original shape: {original_shape},Prediction original shape: {prediction.shape}, new shape: {new_shape}")
                 # prediction = resize_data(prediction, target_cropped_shape,order=0)
-                prediction = resample_data_or_seg(prediction, target_cropped_shape, is_seg=True)
+                prediction = resample_data_or_seg(prediction, target_cropped_shape, is_seg=True, order=1,order_z=0,do_separate_z=False)
                 # prediction = resize_data(prediction, original_shape,order=0)
                 
                 target_sum = np.sum(prediction)
-                print(f"prediction sum: {target_sum}")
+                print(f"prediction sum=================================: {target_sum}")
                 unique, counts = np.unique(prediction[1], return_counts=True)
                 print(f"Unique values in prediction: {unique}, Counts: {counts}")
                 print(f"Prediction resized shape: {prediction.shape}")
@@ -456,9 +456,9 @@ class nnUNetTrainerColonDisconSLTest(nnUNetTrainerNoDeepSupervision):
                 
                 # output[:, bbox_lbs[0]:bbox_lbs[0]+s0, bbox_lbs[1]:bbox_lbs[1]+s1, bbox_lbs[2]:bbox_lbs[2]+s2] = prediction
                
-                # output[:, bbox_lbs[0]:bbox_ubs[0]+1, bbox_lbs[1]:bbox_ubs[1]+1, bbox_lbs[2]:bbox_ubs[2]+1] = prediction
+                output[:, bbox_lbs[0]:bbox_ubs[0]+1, bbox_lbs[1]:bbox_ubs[1]+1, bbox_lbs[2]:bbox_ubs[2]+1] = prediction
                 # output = prediction
-                output = insert_prediction_safe(output, prediction, bbox_lbs) 
+                # output = insert_prediction_safe(output, prediction, bbox_lbs) 
                 
                 output = torch.from_numpy(output)
                 output = output.unsqueeze(0).float()

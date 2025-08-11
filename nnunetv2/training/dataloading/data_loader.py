@@ -171,10 +171,31 @@ class nnUNetDataLoader(DataLoader):
         
         # print(f"data shape: {self.data_shape}, seg shape: {self.seg_shape}, batch size: {self.batch_size}")
         # preallocate memory for data and seg
+        # Here they set the patch size [crop with bbox do it for patch size]
         data_all = np.zeros(self.data_shape, dtype=np.float32)
         seg_all = np.zeros(self.seg_shape, dtype=np.int16)
         seg2_all = np.zeros(self.seg_shape, dtype=np.int16)
         disconnection_map_all = np.zeros(self.seg_shape, dtype=np.int16)
+        
+        current_spacing =  [
+                3.0,
+                0.9765625,
+                0.9765625
+            ]
+        
+        data_kwargs = {
+                "is_seg": False,
+                "order": 3,
+                "order_z": 0,
+                "force_separate_z": None
+            },
+        
+        seg_kwargs = {
+                "is_seg": True,
+                "order": 1,
+                "order_z": 0,
+                "force_separate_z": None
+            }
 
         for j, i in enumerate(selected_keys):
             # oversampling foreground will improve stability of model training, especially if many patches are empty
@@ -191,7 +212,7 @@ class nnUNetDataLoader(DataLoader):
             # bbox_lbs, bbox_ubs = self.get_bbox(shape, force_fg, properties['class_locations'])
             pad = 20
             bbox_lbs, bbox_ubs = get_padded_3d_segmentation_box(seg2[0], pad)
-            bbox = [[i, j] for i, j in zip(bbox_lbs, bbox_ubs)]
+            # bbox = [[i, j] for i, j in zip(bbox_lbs, bbox_ubs)]
 
             # use ACVL utils for that. Cleaner.
             # data_all[j] = crop_and_pad_nd(data, bbox, 0)
