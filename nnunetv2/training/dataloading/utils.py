@@ -135,6 +135,7 @@ def get_padded_3d_square_xy_segmentation_box(segmentation_map, target_size, pad=
         # resize ratio 
         xy_resize_ratio = tartet_x / x_size
         z_size_after_resize = int(z_size * xy_resize_ratio)
+        data_dict['scaling_ratio'] = xy_resize_ratio
         
         # check scaling for z axis
         if z_size_after_resize < target_z:
@@ -152,6 +153,7 @@ def get_padded_3d_square_xy_segmentation_box(segmentation_map, target_size, pad=
         # resize ratio 
         xy_resize_ratio = target_y / y_size
         z_size_after_resize = int(z_size * xy_resize_ratio)
+        data_dict['scaling_ratio'] = xy_resize_ratio
         
         # check scaling for z axis
         if z_size_after_resize < target_z:
@@ -225,11 +227,11 @@ def get_padded_3d_square_xy_segmentation_box(segmentation_map, target_size, pad=
     
     # bounding box coordinates after padding
     xb_min = int(x_center_padded - tartet_x // 2)
-    xb_max = int(x_center_padded + (tartet_x - 1) // 2)
+    xb_max = xb_min + (tartet_x - 1)
     yb_min = int(y_center_padded - target_y // 2)
-    yb_max = int(y_center_padded + (target_y - 1) // 2)
+    yb_max = yb_min + (target_y - 1)
     zb_min = int(z_center_padded - target_z // 2)
-    zb_max = int(z_center_padded + (target_z - 1) // 2)
+    zb_max = zb_min + (target_z - 1)
     
     # Store the final padded min and max coordinates
     min_coord_padded = (xb_min, yb_min, zb_min)
@@ -288,6 +290,26 @@ def get_padded_3d_segmentation_box(segmentation_map, pad=0):
 
     return tuple(min_padded), tuple(max_padded)
 
+def pad_with_all_directions(segmentation_map, x_min_pad, y_min_pad, z_min_pad, x_max_pad, y_max_pad, z_max_pad):
+    """
+    Pads a 3D segmentation map with specified padding in all directions.
+    
+    Parameters:
+        segmentation_map (np.ndarray): 3D ndarray (C, X, Y, Z)
+        x_min_pad (int): Padding in the X direction at the start
+        y_min_pad (int): Padding in the Y direction at the start
+        z_min_pad (int): Padding in the Z direction at the start
+        x_max_pad (int): Padding in the X direction at the end
+        y_max_pad (int): Padding in the Y direction at the end
+        z_max_pad (int): Padding in the Z direction at the end
+    
+    Returns:
+        np.ndarray: Padded segmentation map
+    """
+    return np.pad(segmentation_map,
+                  ((0, 0), (x_min_pad, x_max_pad), (y_min_pad, y_max_pad), (z_min_pad, z_max_pad)),
+                  mode='constant', constant_values=0)
+
 def crop_with_bbox(segmentation_map, min_coord, max_coord):
     x_min, y_min, z_min  = min_coord
     x_max, y_max, z_max = max_coord
@@ -303,6 +325,20 @@ def resize_data(data: np.ndarray, target_shape: Tuple[int, ...],order: int =1) -
     target_x, target_y , target_z,  = target_shape
     
     zoom_factors = ( target_x / x, target_y / y,  target_z / z)
+    
+    resized = np.stack([
+        zoom(data[i], zoom_factors, order=order)  # linear interpolation
+        for i in range(c)
+    ])
+    
+    return resized
+
+def resize_data_with_scaling_factor(data: np.ndarray, scaling_factor: float,order: int =1) -> np.ndarray:
+    assert data.ndim == 4, "Expected input of shape (C, X, Y, Z)"
+    
+    c, x, y, z = data.shape
+    
+    zoom_factors = ( scaling_factor,scaling_factor,  scaling_factor)
     
     resized = np.stack([
         zoom(data[i], zoom_factors, order=order)  # linear interpolation

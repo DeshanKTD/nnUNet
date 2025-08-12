@@ -33,7 +33,7 @@ from batchgeneratorsv2.transforms.base.basic_transform import BasicTransform
 from batchgeneratorsv2.transforms.spatial.mirroring import MirrorTransform
 from batchgeneratorsv2.transforms.utils.remove_label import RemoveLabelTansform
 from batchgeneratorsv2.transforms.utils.compose import ComposeTransforms
-from nnunetv2.training.dataloading.utils import crop_with_bbox, get_padded_3d_segmentation_box, get_padded_3d_square_xy_segmentation_box, resize_data
+from nnunetv2.training.dataloading.utils import crop_with_bbox, get_padded_3d_segmentation_box, get_padded_3d_square_xy_segmentation_box, pad_with_all_directions, resize_data, resize_data_with_scaling_factor
 
 import torch.nn.functional as F
 
@@ -367,39 +367,40 @@ class nnUNetTrainerColonDisconSLTest(nnUNetTrainerNoDeepSupervision):
                 print(f"target sum: {target_sum}")
                 
                 # check resizing is working without a issue without croppping - 
-                bbox_lbs, bbox_ubs = get_padded_3d_square_xy_segmentation_box(target[0],target_size, pad)
-                # bbox_lbs = (0,0,0)
-                # bbox_ubs = (original_shape[0]-1, original_shape[1]-1, original_shape[2]-1)
-                # seg_cropped = crop_with_bbox(seg2, bbox_lbs, bbox_ubs)
-                # data_cropped = crop_with_bbox(data, bbox_lbs, bbox_ubs)
-                target_cropped = crop_with_bbox(target, bbox_lbs, bbox_ubs)
+                data_dict = get_padded_3d_square_xy_segmentation_box(target[0],target_size, pad)
+                print(f"data_dict: {data_dict}")
+                scaling_ratio = data_dict['scaling_ratio']
+                # resize with the proposed scaling factor
+                scaled_target = resize_data_with_scaling_factor(target, scaling_factor=scaling_ratio, order=0)
+                print(f"scaled target shape: {scaled_target.shape}, original shape: {original_shape}")
+                # add the proposed padding
+                padded_target = pad_with_all_directions(scaled_target,data_dict["x_min_pad"],
+                                                        data_dict["y_min_pad"], data_dict["z_min_pad"],
+                                                        data_dict["x_max_pad"], data_dict["y_max_pad"], data_dict["z_max_pad"])
+                
+                padded_target_shape = padded_target.shape[1:]
+                print(f"padded target shape: {padded_target.shape}")
+                
+                
+                # extract the bounding box
+                bbox_lbs = data_dict['bbox_min_padded']
+                bbox_ubs = data_dict['bbox_max_padded']
+                target_cropped = crop_with_bbox(padded_target, bbox_lbs, bbox_ubs)
                 target_cropped_shape = target_cropped.shape[1:]
                 print(f"target cropped shape: {target_cropped_shape}")
+                
+                
                 target_sum = np.sum(target_cropped)
                 print(f"target cropped sum: {target_sum}")
-                # seg_cropped_shape = seg_cropped.shape[1:]
-                # seg2_resized = resize_data(seg_cropped,target_size)
-                # data_resized = resize_data(data_cropped,target_size)
-                # target_resized = resize_data(target_cropped,target_size,order=0)
-                # target_resized = resize_data(target_cropped,target_size,order=0)
-                target_resized = resample_data_or_seg(target_cropped, target_size, is_seg=True,order=1,order_z=0,do_separate_z=False)
-                # target_resized = resize_data(target, target_size,order=0)
+                # target_resized = resample_data_or_seg(target_cropped, target_size, is_seg=True,order=1,order_z=0,do_separate_z=False)
                 
                 print(f"target shape: {target.shape}")
-                # print(f"bbox_lbs: {bbox_lbs}, bbox_ubs: {bbox_ubs}")
-                # print(f"target cropped shape: {target_cropped.shape}")
-                print(f"target resized shape: {target_resized.shape}")
-                
                 
                 
                 with warnings.catch_warnings():
                     # ignore 'The given NumPy array is not writable' warning
                     warnings.simplefilter("ignore")
-                    # seg2 = torch.from_numpy(seg2_resized)
-                    # seg2 = seg2.unsqueeze(0).float()  # add batch dimension
-                    # data = torch.from_numpy(data_resized)
-                    # data = data.unsqueeze(0).float()  # add batch dimension
-                    target = torch.from_numpy(target_resized).long()
+                    target = torch.from_numpy(target_cropped).long()
                     target_onehot = F.one_hot(target, num_classes=2)
                     print(f"target onehot shape: {target_onehot.shape}")
 
@@ -407,13 +408,6 @@ class nnUNetTrainerColonDisconSLTest(nnUNetTrainerNoDeepSupervision):
                     print(f"target onehot permuted shape: {target_onehot.shape}")
                     # target = target_onehot.unsqueeze(0).float()  # add batch dimension
                     
-                    # data = torch.cat([data, seg2], dim=1)
-                    # data = data.to(self.device, non_blocking=True)
-                    
-                    # data = data.float()
-                    
-                # print(f"seg2 shape: {seg2.shape}, original shape: {original_shape}, seg_cropped_shape: {seg_cropped_shape}")
-
                 # self.network.eval()
                 # with torch.no_grad():
                     # we do not use autocast here because it is not supported by DDP
@@ -425,53 +419,40 @@ class nnUNetTrainerColonDisconSLTest(nnUNetTrainerNoDeepSupervision):
                 prediction = target_onehot.cpu().numpy()
                 prediction = np.squeeze(prediction, axis=0)  # remove batch dimension
                 
-                # resize to cropped shape
-                # prediction = resize_data(prediction, seg_cropped_shape)
-                # new shape 
-                # new_shape = ( original_shape[0], original_shape[1],original_shape[2])
-                # print(len(prediction.shape), len(new_shape))
-                # print(f"original shape: {original_shape},Prediction original shape: {prediction.shape}, new shape: {new_shape}")
-                # prediction = resize_data(prediction, target_cropped_shape,order=0)
-                prediction = resample_data_or_seg(prediction, target_cropped_shape, is_seg=True, order=1,order_z=0,do_separate_z=False)
-                # prediction = resize_data(prediction, original_shape,order=0)
                 
-                target_sum = np.sum(prediction)
-                print(f"prediction sum=================================: {target_sum}")
-                unique, counts = np.unique(prediction[1], return_counts=True)
-                print(f"Unique values in prediction: {unique}, Counts: {counts}")
-                print(f"Prediction resized shape: {prediction.shape}")
-                
-                
-                
+                # create output array with padded target shape
                 output = np.zeros((
                     prediction.shape[0],
-                    original_shape[0],
-                    original_shape[1],
-                    original_shape[2]), 
+                    padded_target_shape[0],
+                    padded_target_shape[1],
+                    padded_target_shape[2]), 
                                   dtype=np.float32)
                 
                 s0, s1, s2 = prediction.shape[1:]
-                # print(f"Output shape: {output.shape}, s0: {s0}, s1: {s1}, s2: {s2}")
-                print(f"bbox_lbs: {bbox_lbs}, bbox_ubs: {bbox_ubs}")
-                
-                # output[:, bbox_lbs[0]:bbox_lbs[0]+s0, bbox_lbs[1]:bbox_lbs[1]+s1, bbox_lbs[2]:bbox_lbs[2]+s2] = prediction
-               
                 output[:, bbox_lbs[0]:bbox_ubs[0]+1, bbox_lbs[1]:bbox_ubs[1]+1, bbox_lbs[2]:bbox_ubs[2]+1] = prediction
-                # output = prediction
-                # output = insert_prediction_safe(output, prediction, bbox_lbs) 
+
+                # remove padding
+                padding_start_coord = data_dict['min_removed_pad']
+                padding_end_coord = data_dict['max_removed_pad']
+                output = output[:, padding_start_coord[0]:padding_end_coord[0]+1,
+                                padding_start_coord[1]:padding_end_coord[1]+1,
+                                padding_start_coord[2]:padding_end_coord[2]+1]
+                
+                print(f"Output shape after removing padding: {output.shape}")
                 
                 output = torch.from_numpy(output)
-                output = output.unsqueeze(0).float()
+                # output = output.unsqueeze(0).float()
+                resize_data_output = resize_data(output,original_shape, order=0) 
                 
                 
-                print(f"Output shape: {output.shape}, ")
+                print(f"Output shape: {resize_data_output.shape}, ")
                 
                 
                 # this needs to go into background processes
                 results.append(
                     segmentation_export_pool.starmap_async(
                         export_prediction_from_logits, (
-                            (prediction, properties, self.configuration_manager, self.plans_manager,
+                            (resize_data_output, properties, self.configuration_manager, self.plans_manager,
                              self.dataset_json, output_filename_truncated, save_probabilities),
                         )
                     )
