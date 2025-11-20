@@ -32,7 +32,7 @@ from batchgeneratorsv2.transforms.base.basic_transform import BasicTransform
 from batchgeneratorsv2.transforms.spatial.mirroring import MirrorTransform
 from batchgeneratorsv2.transforms.utils.remove_label import RemoveLabelTansform
 from batchgeneratorsv2.transforms.utils.compose import ComposeTransforms
-from nnunetv2.training.dataloading.utils import crop_with_bbox, get_padded_3d_segmentation_box, resize_data
+from nnunetv2.training.dataloading.utils import crop_with_bbox, get_padded_3d_segmentation_box, get_padded_3d_square_xy_segmentation_box, pad_with_all_directions, resize_data, resize_data_with_scaling_factor
 
 
 class nnUNetTrainerColonDisconSL(nnUNetTrainerNoDeepSupervision):
@@ -44,7 +44,7 @@ class nnUNetTrainerColonDisconSL(nnUNetTrainerNoDeepSupervision):
         self.initial_dlr = 1e-4
         self.grad_scaler = None
         self.weight_decay = 0.01
-        self.num_epochs = 1000
+        self.num_epochs = 500
         self.lambda_adv = 0.01  # You can tune this
         self.configuration_manager.configuration['patch_size'] = [192,192,192]
         
@@ -285,7 +285,7 @@ class nnUNetTrainerColonDisconSL(nnUNetTrainerNoDeepSupervision):
 
     def perform_actual_validation(self, save_probabilities: bool = False):
         self.set_deep_supervision_enabled(False)
-        self.load_checkpoint(join(self.output_folder, 'checkpoint_best.pth'))
+        # self.load_checkpoint(join(self.output_folder, 'checkpoint_best.pth'))
         
         self.network.eval()
 
@@ -346,9 +346,6 @@ class nnUNetTrainerColonDisconSL(nnUNetTrainerNoDeepSupervision):
                 data = data[:]
                 seg2 = seg2[:]
                 
-                # Combine data and seg
-                # print("data",data.shape)
-                # print("seg2",seg2.shape)
                 
                 # self.print_to_log_file(f'{k}, shape {data.shape}, rank {self.local_rank}')
                 print(f'{k}, shape {data.shape}, rank {self.local_rank}')
@@ -362,25 +359,40 @@ class nnUNetTrainerColonDisconSL(nnUNetTrainerNoDeepSupervision):
                 # implement prediction pipeline
                 pad = 20
                 target_size = (128,128,192)
-                bbox_lbs, bbox_ubs = get_padded_3d_segmentation_box(seg2[0], pad)
-                seg_cropped = crop_with_bbox(seg2, bbox_lbs, bbox_ubs)
-                data_cropped = crop_with_bbox(data, bbox_lbs, bbox_ubs)
-                seg_cropped_shape = seg_cropped.shape[1:]
-                seg2_resized = resize_data(seg_cropped,target_size,order=0)
-                data_resized = resize_data(data_cropped,target_size,order=1)
                 
-                print(f"seg2 shape: {seg2.shape}")
-                print(f"bbox_lbs: {bbox_lbs}, bbox_ubs: {bbox_ubs}")
-                print(f"seg_cropped shape: {seg_cropped.shape}")
-                print(f"target_size: {target_size}")
-                print(f"seg2_resized shape: {seg2_resized.shape}")
+                # get details for padding, scaling and cropping
+                data_dict = get_padded_3d_square_xy_segmentation_box(seg2[0],target_size, pad)
+                scaling_ratio = data_dict['scaling_ratio']
+                
+                # resize data and seg2 with scaling factor
+                scaled_data = resize_data_with_scaling_factor(data, scaling_ratio, order=1)
+                scaled_seg2 = resize_data_with_scaling_factor(seg2, scaling_ratio, order=0)
+                
+                # pad data and seg2 with all directions
+                padded_data = pad_with_all_directions(scaled_data,data_dict["x_min_pad"],
+                                                        data_dict["y_min_pad"], data_dict["z_min_pad"],
+                                                        data_dict["x_max_pad"], data_dict["y_max_pad"], data_dict["z_max_pad"])
+                
+                padded_seg2 = pad_with_all_directions(scaled_seg2,data_dict["x_min_pad"],
+                                                        data_dict["y_min_pad"], data_dict["z_min_pad"],
+                                                        data_dict["x_max_pad"], data_dict["y_max_pad"], data_dict["z_max_pad"])
+                padded_seg2_shape = padded_seg2.shape[1:]
+                
+                # crop seg2 and data with bounding box
+                bbox_lbs = data_dict['bbox_min_padded']
+                bbox_ubs = data_dict['bbox_max_padded']
+                
+                # crop seg2 and data with bounding box
+                data_cropped = crop_with_bbox(padded_data, bbox_lbs, bbox_ubs)
+                seg2_cropped = crop_with_bbox(padded_seg2, bbox_lbs, bbox_ubs)
+                
                 
                 with warnings.catch_warnings():
                     # ignore 'The given NumPy array is not writable' warning
                     warnings.simplefilter("ignore")
-                    seg2 = torch.from_numpy(seg2_resized)
+                    seg2 = torch.from_numpy(seg2_cropped)
                     seg2 = seg2.unsqueeze(0).float()  # add batch dimension
-                    data = torch.from_numpy(data_resized)
+                    data = torch.from_numpy(data_cropped)
                     data = data.unsqueeze(0).float()  # add batch dimension
                     
                     data = torch.cat([data, seg2], dim=1)
@@ -388,8 +400,7 @@ class nnUNetTrainerColonDisconSL(nnUNetTrainerNoDeepSupervision):
                     
                     data = data.float()
                     
-                # print(f"seg2 shape: {seg2.shape}, original shape: {original_shape}, seg_cropped_shape: {seg_cropped_shape}")
-                print(f"input data shape: {data.shape}")
+                # print(f"input data shape: {data.shape}")
 
                 self.network.eval()
                 with torch.no_grad():
@@ -399,31 +410,32 @@ class nnUNetTrainerColonDisconSL(nnUNetTrainerNoDeepSupervision):
                 prediction = prediction.cpu().numpy()
                 prediction = np.squeeze(prediction, axis=0)  # remove batch dimension
                 
-                print(f"Prediction shape before resize: {prediction.shape},")
-                
-                # resize to cropped shape
-                prediction = resize_data(prediction, seg_cropped_shape,order=1)
-                
-                print(f"Prediction shape after resize: {prediction.shape}, ")
-                
+                # create output array with padded target shape
                 output = np.zeros((
                     prediction.shape[0],
-                    original_shape[0],
-                    original_shape[1],
-                    original_shape[2]), 
+                    padded_seg2_shape[0],
+                    padded_seg2_shape[1],
+                    padded_seg2_shape[2]), 
                                   dtype=np.float32)
-                print(f"Output shape: {output.shape},")
                 
-                s0, s1, s2 = prediction.shape[1:]
-                output[:, bbox_lbs[0]:bbox_lbs[0]+s0, bbox_lbs[1]:bbox_lbs[1]+s1, bbox_lbs[2]:bbox_lbs[2]+s2] = prediction
-
+                # set the prediction in the output array (this can have padding)
+                output[:, bbox_lbs[0]:bbox_ubs[0]+1, bbox_lbs[1]:bbox_ubs[1]+1, bbox_lbs[2]:bbox_ubs[2]+1] = prediction
                 
-                output = torch.from_numpy(output)
-                output = output.unsqueeze(0).float()
+               # remove padding from prediction
+                padding_start_coord = data_dict['min_removed_pad']
+                padding_end_coord = data_dict['max_removed_pad']
+                output = output[:, padding_start_coord[0]:padding_end_coord[0]+1,
+                                padding_start_coord[1]:padding_end_coord[1]+1,
+                                padding_start_coord[2]:padding_end_coord[2]+1]
                 
                 
-                print(f"Prediction shape: {prediction.shape}, Output shape: {output.shape}, ")
                 
+                
+                # resize to original shape
+                prediction = resize_data(output, original_shape,order=0)
+                prediction = torch.from_numpy(prediction)
+                
+                # print(f"Prediction shape after resize: {prediction.shape}, ")
                 
                 # this needs to go into background processes
                 results.append(
@@ -470,22 +482,22 @@ class nnUNetTrainerColonDisconSL(nnUNetTrainerNoDeepSupervision):
     def run_training(self):
         self.on_train_start()
 
-        # for epoch in range(self.current_epoch, self.num_epochs):
-        #     self.on_epoch_start()
+        for epoch in range(self.current_epoch, self.num_epochs):
+            self.on_epoch_start()
 
-        #     self.on_train_epoch_start()
-        #     train_outputs = []
-        #     for batch_id in range(self.num_iterations_per_epoch):
-        #         train_outputs.append(self.train_step(next(self.dataloader_train)))
-        #     self.on_train_epoch_end(train_outputs)
+            self.on_train_epoch_start()
+            train_outputs = []
+            for batch_id in range(self.num_iterations_per_epoch):
+                train_outputs.append(self.train_step(next(self.dataloader_train)))
+            self.on_train_epoch_end(train_outputs)
 
-        #     with torch.no_grad():
-        #         self.on_validation_epoch_start()
-        #         val_outputs = []
-        #         for batch_id in range(self.num_val_iterations_per_epoch):
-        #             val_outputs.append(self.validation_step(next(self.dataloader_val)))
-        #         self.on_validation_epoch_end(val_outputs)
+            with torch.no_grad():
+                self.on_validation_epoch_start()
+                val_outputs = []
+                for batch_id in range(self.num_val_iterations_per_epoch):
+                    val_outputs.append(self.validation_step(next(self.dataloader_val)))
+                self.on_validation_epoch_end(val_outputs)
 
-        #     self.on_epoch_end()
+            self.on_epoch_end()
 
         self.on_train_end()

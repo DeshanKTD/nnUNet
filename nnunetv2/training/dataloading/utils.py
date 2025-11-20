@@ -102,8 +102,8 @@ def get_padded_3d_square_xy_segmentation_box(segmentation_map, target_size, pad=
     min_coord = min_coord.astype(int)
     max_coord = max_coord.astype(int)
     
-    print(f"intial shape: {shape}")
-    print(f"min_coord_of_foreground: {min_coord}, max_coord_of_foreground: {max_coord}")
+    # print(f"intial shape: {shape}")
+    # print(f"min_coord_of_foreground: {min_coord}, max_coord_of_foreground: {max_coord}")
 
     # Apply padding
     min_coord_padded = np.maximum(min_coord - pad, 0)
@@ -116,7 +116,7 @@ def get_padded_3d_square_xy_segmentation_box(segmentation_map, target_size, pad=
     
     data_dict['center'] = tuple((center_x, center_y, center_z))
     
-    print(f"min_coord_padded: {min_coord_padded}, max_coord_padded: {max_coord_padded}")
+    # print(f"min_coord_padded: {min_coord_padded}, max_coord_padded: {max_coord_padded}")
     
     tartet_x, target_y, target_z = target_size
     
@@ -126,7 +126,7 @@ def get_padded_3d_square_xy_segmentation_box(segmentation_map, target_size, pad=
     y_size = y_max - y_min + 1
     z_size = z_max - z_min + 1
     
-    print(f"length_x_size: {x_size}, length_y_size: {y_size}")
+    # print(f"length_x_size: {x_size}, length_y_size: {y_size}")
     
     # Select the larger dimension to ensure square cropping
     if x_size >= y_size:
@@ -165,25 +165,25 @@ def get_padded_3d_square_xy_segmentation_box(segmentation_map, target_size, pad=
             z_scale = target_size[2] / z_size
             data_dict['scaling_ratio'] = z_scale
         
-    print(f"scaling ratio: {data_dict['scaling_ratio']}")
+    # print(f"scaling ratio: {data_dict['scaling_ratio']}")
         
     scaled_x_shape = int(x * data_dict['scaling_ratio'])
     scaled_y_shape = int(y * data_dict['scaling_ratio'])
     scaled_z_shape = int(z * data_dict['scaling_ratio'])
     
-    scaled_center_x = center_x * data_dict['scaling_ratio']
-    scaled_center_y = center_y * data_dict['scaling_ratio']
-    scaled_center_z = center_z * data_dict['scaling_ratio']
+    scaled_center_x = int(center_x * data_dict['scaling_ratio'])
+    scaled_center_y = int(center_y * data_dict['scaling_ratio'])
+    scaled_center_z = int(center_z * data_dict['scaling_ratio'])
     
-    print(f"scaled shape: ({scaled_x_shape}, {scaled_y_shape}, {scaled_z_shape})")
+    # print(f"scaled shape: ({scaled_x_shape}, {scaled_y_shape}, {scaled_z_shape})")
     
     # Calculate new min and max coordinates based on the scaled center
-    x_min = int(scaled_center_x - tartet_x // 2)
-    x_max = int(scaled_center_x + (tartet_x - 1) // 2)
-    y_min = int(scaled_center_y - target_y // 2)
-    y_max = int(scaled_center_y + (target_y - 1) // 2)
-    z_min = int(scaled_center_z - target_z // 2)
-    z_max = int(scaled_center_z + (target_z - 1) // 2)  
+    x_min = scaled_center_x - int(tartet_x // 2)
+    x_max = scaled_center_x + int((tartet_x - 1) // 2)
+    y_min = scaled_center_y - int(target_y // 2)
+    y_max = scaled_center_y + int((target_y - 1) // 2)
+    z_min = scaled_center_z - int(target_z // 2)
+    z_max = scaled_center_z + int((target_z - 1) // 2)  
     
     data_dict["x_min_pad"] = 0
     data_dict["y_min_pad"] = 0
@@ -226,11 +226,11 @@ def get_padded_3d_square_xy_segmentation_box(segmentation_map, target_size, pad=
     z_center_padded = scaled_center_z + data_dict["z_min_pad"]
     
     # bounding box coordinates after padding
-    xb_min = int(x_center_padded - tartet_x // 2)
+    xb_min = x_center_padded - int(tartet_x // 2)
     xb_max = xb_min + (tartet_x - 1)
-    yb_min = int(y_center_padded - target_y // 2)
+    yb_min = y_center_padded - int(target_y // 2)
     yb_max = yb_min + (target_y - 1)
-    zb_min = int(z_center_padded - target_z // 2)
+    zb_min = z_center_padded - int(target_z // 2)
     zb_max = zb_min + (target_z - 1)
     
     # Store the final padded min and max coordinates
@@ -241,7 +241,7 @@ def get_padded_3d_square_xy_segmentation_box(segmentation_map, target_size, pad=
     data_dict["bbox_min_padded"] = min_coord_padded
     data_dict["bbox_max_padded"] = max_coord_padded
     
-    print(f"padded min_coord: {min_coord_padded}, padded max_coord: {max_coord_padded}")
+    # print(f"padded min_coord: {min_coord_padded}, padded max_coord: {max_coord_padded}")
     
         
     # remove padding
@@ -255,7 +255,7 @@ def get_padded_3d_square_xy_segmentation_box(segmentation_map, target_size, pad=
     data_dict["min_removed_pad"] = (xc_min, yc_min, zc_min)
     data_dict["max_removed_pad"] = (xc_max, yc_max, zc_max)
     
-    print(f"min_removed_pad: {data_dict['min_removed_pad']}, max_removed_pad: {data_dict['max_removed_pad']}")
+    # print(f"min_removed_pad: {data_dict['min_removed_pad']}, max_removed_pad: {data_dict['max_removed_pad']}")
     
     return data_dict
 
