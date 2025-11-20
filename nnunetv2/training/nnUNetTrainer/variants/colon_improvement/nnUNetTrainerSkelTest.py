@@ -4,10 +4,8 @@ import warnings
 from nnunetv2.evaluation.evaluate_predictions import compute_metrics_on_folder
 from nnunetv2.inference.export_prediction import export_prediction_from_logits, resample_and_save
 from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor
-from nnunetv2.nets.UNetPlusPlus import BasicUNetPlusPlus
-from nnunetv2.training import nnUNetTrainer
-from nnunetv2.training.dataloading.data_loader_patch import nnUNetPatchDataLoader
-from nnunetv2.training.dataloading.nnunet_dataset import infer_dataset_class
+from nnunetv2.training.dataloading.multiple_segmentation.data_loader_patch_seg2 import nnUNetDataLoaderPatchWithMultiSeg
+from nnunetv2.training.dataloading.multiple_segmentation.nnunet_dataset_seg2 import infer_dataset_class
 from nnunetv2.training.loss.compound_losses import DC_and_CE_loss
 from nnunetv2.training.lr_scheduler.polylr import PolyLRScheduler
 from nnunetv2.training.nnUNetTrainer.variants.network_architecture.nnUNetTrainerNoDeepSupervision import nnUNetTrainerNoDeepSupervision
@@ -36,7 +34,7 @@ import os
 
 from nnunetv2.configuration import ANISO_THRESHOLD, default_num_processes
 from nnunetv2.training.data_augmentation.custom_transforms.colon.random_disconnection_transform import RandomDisconnectionsTransform
-from nnunetv2.training.dataloading.nnunet_dataset import infer_dataset_class
+from nnunetv2.training.dataloading.multiple_segmentation.nnunet_dataset_seg2 import infer_dataset_class
 from nnunetv2.training.loss.dice import get_tp_fp_fn_tn
 from nnunetv2.training.lr_scheduler.polylr import PolyLRScheduler
 from nnunetv2.training.nnUNetTrainer.variants.network_architecture.nnUNetTrainerNoDeepSupervision import nnUNetTrainerNoDeepSupervision
@@ -111,14 +109,14 @@ class nnUNetTrainerSkelTest(nnUNetTrainerNoDeepSupervision):
 
         dataset_tr, dataset_val = self.get_tr_and_val_datasets()
 
-        dl_tr = nnUNetPatchDataLoader(dataset_tr, self.batch_size,
+        dl_tr = nnUNetDataLoaderPatchWithMultiSeg(dataset_tr, self.batch_size,
                                  initial_patch_size,
                                  self.configuration_manager.patch_size,
                                  self.label_manager,
                                  oversample_foreground_percent=self.oversample_foreground_percent,
                                  sampling_probabilities=None, pad_sides=None, transforms=tr_transforms,
                                  probabilistic_oversampling=self.probabilistic_oversampling)
-        dl_val = nnUNetPatchDataLoader(dataset_val, self.batch_size,
+        dl_val = nnUNetDataLoaderPatchWithMultiSeg(dataset_val, self.batch_size,
                                   self.configuration_manager.patch_size,
                                   self.configuration_manager.patch_size,
                                   self.label_manager,

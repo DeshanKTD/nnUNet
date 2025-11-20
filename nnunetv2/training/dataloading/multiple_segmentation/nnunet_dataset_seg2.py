@@ -16,7 +16,7 @@ from nnunetv2.training.dataloading.utils import unpack_dataset
 import math
 
 
-class nnUNetBaseDataset(ABC):
+class nnUNetBaseDatasetMutiSeg(ABC):
     """
     Defines the interface
     """
@@ -61,7 +61,7 @@ class nnUNetBaseDataset(ABC):
         pass
 
 
-class nnUNetDatasetNumpy(nnUNetBaseDataset):
+class nnUNetDatasetNumpyMultiSeg(nnUNetBaseDatasetMutiSeg):
     def load_case(self, identifier):
         data_npy_file = join(self.source_folder, identifier + '.npy')
         if not isfile(data_npy_file):
@@ -119,7 +119,7 @@ class nnUNetDatasetNumpy(nnUNetBaseDataset):
         return unpack_dataset(folder, True, overwrite_existing, num_processes, verify)
 
 
-class nnUNetDatasetBlosc2(nnUNetBaseDataset):
+class nnUNetDatasetBlosc2MultiSeg(nnUNetBaseDatasetMutiSeg):
     def __init__(self, folder: str, identifiers: List[str] = None,
                  folder_with_segs_from_previous_stage: str = None):
         super().__init__(folder, identifiers, folder_with_segs_from_previous_stage)
@@ -139,7 +139,10 @@ class nnUNetDatasetBlosc2(nnUNetBaseDataset):
         data = blosc2.open(urlpath=data_b2nd_file, mode='r', dparams=dparams, **mmap_kwargs)
 
         seg_b2nd_file = join(self.source_folder, identifier + '_seg.b2nd')
+        seg1_b2nd_file = join(self.source_folder, identifier + '_seg2.b2nd')
+        
         seg = blosc2.open(urlpath=seg_b2nd_file, mode='r', dparams=dparams, **mmap_kwargs)
+        seg_1 = blosc2.open(urlpath=seg1_b2nd_file, mode='r', dparams=dparams, **mmap_kwargs)
 
         if self.folder_with_segs_from_previous_stage is not None:
             prev_seg_b2nd_file = join(self.folder_with_segs_from_previous_stage, identifier + '.b2nd')
@@ -148,8 +151,21 @@ class nnUNetDatasetBlosc2(nnUNetBaseDataset):
             seg_prev = None
 
         properties = load_pickle(join(self.source_folder, identifier + '.pkl'))
-        return data, seg, seg_prev, properties
-
+        
+        seg = self._remove_negative_values(seg)
+        seg_1 = self._remove_negative_values(seg_1)
+        
+        
+        return data, seg, seg_prev, properties, seg_1
+    
+    def _remove_negative_values(self, seg):
+        """
+        Removes negative values from the segmentation map.
+        This is a workaround for a bug in the nnUNet preprocessing pipeline.
+        """
+        seg = np.where(seg == 1, 1, 0)  # set negative values to 0
+        return seg
+    
     @staticmethod
     def save_case(
             data: np.ndarray,
@@ -299,12 +315,12 @@ class nnUNetDatasetBlosc2(nnUNetBaseDataset):
 
 
 file_ending_dataset_mapping = {
-    'npz': nnUNetDatasetNumpy,
-    'b2nd': nnUNetDatasetBlosc2
+    'npz': nnUNetDatasetNumpyMultiSeg,
+    'b2nd': nnUNetDatasetBlosc2MultiSeg
 }
 
 
-def infer_dataset_class(folder: str) -> Union[Type[nnUNetDatasetBlosc2], Type[nnUNetDatasetNumpy]]:
+def infer_dataset_class(folder: str) -> Union[Type[nnUNetDatasetBlosc2MultiSeg], Type[nnUNetDatasetNumpyMultiSeg]]:
     file_endings = set([os.path.basename(i).split('.')[-1] for i in subfiles(folder, join=False)])
     if 'pkl' in file_endings:
         file_endings.remove('pkl')

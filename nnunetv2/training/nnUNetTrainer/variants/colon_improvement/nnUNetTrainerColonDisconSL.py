@@ -15,7 +15,8 @@ import sys
 
 from nnunetv2.configuration import ANISO_THRESHOLD, default_num_processes
 from nnunetv2.training.data_augmentation.custom_transforms.colon.random_disconnection_transform import RandomDisconnectionsTransform
-from nnunetv2.training.dataloading.nnunet_dataset import infer_dataset_class
+from nnunetv2.training.dataloading.multiple_segmentation.data_loader_full_vol import nnUNetDataLoaderFullVolumeWithMultiSeg
+from nnunetv2.training.dataloading.multiple_segmentation.nnunet_dataset_seg2 import infer_dataset_class
 from nnunetv2.training.loss.dice import get_tp_fp_fn_tn
 from nnunetv2.training.lr_scheduler.polylr import PolyLRScheduler
 from nnunetv2.training.nnUNetTrainer.variants.network_architecture.nnUNetTrainerNoDeepSupervision import nnUNetTrainerNoDeepSupervision
@@ -33,6 +34,9 @@ from batchgeneratorsv2.transforms.spatial.mirroring import MirrorTransform
 from batchgeneratorsv2.transforms.utils.remove_label import RemoveLabelTansform
 from batchgeneratorsv2.transforms.utils.compose import ComposeTransforms
 from nnunetv2.training.dataloading.utils import crop_with_bbox, get_padded_3d_segmentation_box, get_padded_3d_square_xy_segmentation_box, pad_with_all_directions, resize_data, resize_data_with_scaling_factor
+from batchgenerators.dataloading.nondet_multi_threaded_augmenter import NonDetMultiThreadedAugmenter
+from batchgenerators.dataloading.single_threaded_augmenter import SingleThreadedAugmenter
+from nnunetv2.utilities.default_n_proc_DA import get_allowed_n_proc_DA
 
 
 class nnUNetTrainerColonDisconSL(nnUNetTrainerNoDeepSupervision):
@@ -122,6 +126,77 @@ class nnUNetTrainerColonDisconSL(nnUNetTrainerNoDeepSupervision):
             transforms.append(DownsampleSegForDSTransform(ds_scales=deep_supervision_scales))
         return ComposeTransforms(transforms)
 
+
+    def get_dataloaders(self):
+        if self.dataset_class is None:
+            self.dataset_class = infer_dataset_class(self.preprocessed_dataset_folder)
+
+        # we use the patch size to determine whether we need 2D or 3D dataloaders. We also use it to determine whether
+        # we need to use dummy 2D augmentation (in case of 3D training) and what our initial patch size should be
+        patch_size = self.configuration_manager.patch_size
+
+        # needed for deep supervision: how much do we need to downscale the segmentation targets for the different
+        # outputs?
+        deep_supervision_scales = self._get_deep_supervision_scales()
+
+        (
+            rotation_for_DA,
+            do_dummy_2d_data_aug,
+            initial_patch_size,
+            mirror_axes,
+        ) = self.configure_rotation_dummyDA_mirroring_and_inital_patch_size()
+
+        # training pipeline
+        tr_transforms = self.get_training_transforms(
+            patch_size, rotation_for_DA, deep_supervision_scales, mirror_axes, do_dummy_2d_data_aug,
+            use_mask_for_norm=self.configuration_manager.use_mask_for_norm,
+            is_cascaded=self.is_cascaded, foreground_labels=self.label_manager.foreground_labels,
+            regions=self.label_manager.foreground_regions if self.label_manager.has_regions else None,
+            ignore_label=self.label_manager.ignore_label)
+
+        # validation pipeline
+        val_transforms = self.get_validation_transforms(deep_supervision_scales,
+                                                        is_cascaded=self.is_cascaded,
+                                                        foreground_labels=self.label_manager.foreground_labels,
+                                                        regions=self.label_manager.foreground_regions if
+                                                        self.label_manager.has_regions else None,
+                                                        ignore_label=self.label_manager.ignore_label)
+
+        dataset_tr, dataset_val = self.get_tr_and_val_datasets()
+
+        dl_tr = nnUNetDataLoaderFullVolumeWithMultiSeg(dataset_tr, self.batch_size,
+                                 initial_patch_size,
+                                 self.configuration_manager.patch_size,
+                                 self.label_manager,
+                                 oversample_foreground_percent=self.oversample_foreground_percent,
+                                 sampling_probabilities=None, pad_sides=None, transforms=tr_transforms,
+                                 probabilistic_oversampling=self.probabilistic_oversampling)
+        dl_val = nnUNetDataLoaderFullVolumeWithMultiSeg(dataset_val, self.batch_size,
+                                  self.configuration_manager.patch_size,
+                                  self.configuration_manager.patch_size,
+                                  self.label_manager,
+                                  oversample_foreground_percent=self.oversample_foreground_percent,
+                                  sampling_probabilities=None, pad_sides=None, transforms=val_transforms,
+                                  probabilistic_oversampling=self.probabilistic_oversampling)
+
+        allowed_num_processes = get_allowed_n_proc_DA()
+        if allowed_num_processes == 0:
+            mt_gen_train = SingleThreadedAugmenter(dl_tr, None)
+            mt_gen_val = SingleThreadedAugmenter(dl_val, None)
+        else:
+            mt_gen_train = NonDetMultiThreadedAugmenter(data_loader=dl_tr, transform=None,
+                                                        num_processes=allowed_num_processes,
+                                                        num_cached=max(6, allowed_num_processes // 2), seeds=None,
+                                                        pin_memory=self.device.type == 'cuda', wait_time=0.002)
+            mt_gen_val = NonDetMultiThreadedAugmenter(data_loader=dl_val,
+                                                      transform=None, num_processes=max(1, allowed_num_processes // 2),
+                                                      num_cached=max(3, allowed_num_processes // 4), seeds=None,
+                                                      pin_memory=self.device.type == 'cuda',
+                                                      wait_time=0.002)
+        # # let's get this party started
+        _ = next(mt_gen_train)
+        _ = next(mt_gen_val)
+        return mt_gen_train, mt_gen_val
     
     def on_train_epoch_start(self):
         # self.network.train()

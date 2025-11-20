@@ -9,16 +9,16 @@ from batchgenerators.utilities.file_and_folder_operations import join, load_json
 from threadpoolctl import threadpool_limits
 
 from nnunetv2.paths import nnUNet_preprocessed
-from nnunetv2.training.dataloading.nnunet_dataset import nnUNetBaseDataset
-from nnunetv2.training.dataloading.nnunet_dataset import nnUNetDatasetBlosc2
+from nnunetv2.training.dataloading.multiple_segmentation.nnunet_dataset_seg2 import nnUNetBaseDatasetMutiSeg
+from nnunetv2.training.dataloading.multiple_segmentation.nnunet_dataset_seg2 import nnUNetDatasetBlosc2MultiSeg
 from nnunetv2.utilities.label_handling.label_handling import LabelManager
 from nnunetv2.utilities.plans_handling.plans_handler import PlansManager
 from acvl_utils.cropping_and_padding.bounding_boxes import crop_and_pad_nd
 
 
-class nnUNetPatchDataLoader(DataLoader):
+class nnUNetDataLoaderPatchWithMultiSeg(DataLoader):
     def __init__(self,
-                 data: nnUNetBaseDataset,
+                 data: nnUNetBaseDatasetMutiSeg,
                  batch_size: int,
                  patch_size: Union[List[int], Tuple[int, ...], np.ndarray],
                  final_patch_size: Union[List[int], Tuple[int, ...], np.ndarray],
@@ -235,9 +235,9 @@ class nnUNetPatchDataLoader(DataLoader):
 
 if __name__ == '__main__':
     folder = join(nnUNet_preprocessed, 'Dataset002_Heart', 'nnUNetPlans_3d_fullres')
-    ds = nnUNetDatasetBlosc2(folder)  # this should not load the properties!
+    ds = nnUNetDatasetBlosc2MultiSeg(folder)  # this should not load the properties!
     pm = PlansManager(join(folder, os.pardir, 'nnUNetPlans.json'))
     lm = pm.get_label_manager(load_json(join(folder, os.pardir, 'dataset.json')))
-    dl = nnUNetPatchDataLoader(ds, 5, (16, 16, 16), (16, 16, 16), lm,
+    dl = nnUNetDataLoaderPatchWithMultiSeg(ds, 5, (16, 16, 16), (16, 16, 16), lm,
                           0.33, None, None)
     a = next(dl)
