@@ -14,6 +14,7 @@ from batchgenerators.utilities.file_and_folder_operations import join, load_pick
 from nnunetv2.configuration import default_num_processes
 from nnunetv2.training.dataloading.utils import unpack_dataset
 import math
+from skimage.morphology import dilation, ball, erosion
 
 
 class nnUNetBaseDataset(ABC):
@@ -139,7 +140,10 @@ class nnUNetDatasetBlosc2(nnUNetBaseDataset):
         data = blosc2.open(urlpath=data_b2nd_file, mode='r', dparams=dparams, **mmap_kwargs)
 
         seg_b2nd_file = join(self.source_folder, identifier + '_seg.b2nd')
+        seg1_b2nd_file = join(self.source_folder, identifier + '_seg2.b2nd')
+        
         seg = blosc2.open(urlpath=seg_b2nd_file, mode='r', dparams=dparams, **mmap_kwargs)
+        seg_1 = blosc2.open(urlpath=seg1_b2nd_file, mode='r', dparams=dparams, **mmap_kwargs)
 
         if self.folder_with_segs_from_previous_stage is not None:
             prev_seg_b2nd_file = join(self.folder_with_segs_from_previous_stage, identifier + '.b2nd')
@@ -148,8 +152,21 @@ class nnUNetDatasetBlosc2(nnUNetBaseDataset):
             seg_prev = None
 
         properties = load_pickle(join(self.source_folder, identifier + '.pkl'))
-        return data, seg, seg_prev, properties
-
+        
+        seg = self._remove_negative_values(seg)
+        seg_1 = self._remove_negative_values(seg_1)
+        
+        
+        return data, seg, seg_prev, properties, seg_1
+    
+    def _remove_negative_values(self, seg):
+        """
+        Removes negative values from the segmentation map.
+        This is a workaround for a bug in the nnUNet preprocessing pipeline.
+        """
+        seg = np.where(seg == 1, 1, 0)  # set negative values to 0
+        return seg
+    
     @staticmethod
     def save_case(
             data: np.ndarray,

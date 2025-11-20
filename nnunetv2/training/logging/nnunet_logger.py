@@ -20,7 +20,9 @@ class nnUNetLogger(object):
             'ema_fg_dice': list(),
             'dice_per_class_or_region': list(),
             'train_losses': list(),
+            'disc_losses': list(),
             'val_losses': list(),
+            'val_disc_losses': list(),
             'lrs': list(),
             'epoch_start_timestamps': list(),
             'epoch_end_timestamps': list()

@@ -14,10 +14,9 @@ from nnunetv2.training.dataloading.nnunet_dataset import nnUNetDatasetBlosc2
 from nnunetv2.utilities.label_handling.label_handling import LabelManager
 from nnunetv2.utilities.plans_handling.plans_handler import PlansManager
 from acvl_utils.cropping_and_padding.bounding_boxes import crop_and_pad_nd
-from nnunetv2.training.dataloading.utils import crop_with_bbox, get_padded_3d_segmentation_box, get_padded_3d_square_xy_segmentation_box, pad_with_all_directions, resize_data, resize_data_with_scaling_factor
 
 
-class nnUNetDataLoader(DataLoader):
+class nnUNetPatchDataLoader(DataLoader):
     def __init__(self,
                  data: nnUNetBaseDataset,
                  batch_size: int,
@@ -49,7 +48,6 @@ class nnUNetDataLoader(DataLoader):
         self.oversample_foreground_percent = oversample_foreground_percent
         self.final_patch_size = final_patch_size
         self.patch_size = patch_size
-        self.target_size = (128,128,192)
         # need_to_pad denotes by how much we need to pad the data so that if we sample a patch of size final_patch_size
         # (which is what the network will get) these patches will also cover the border of the images
         self.need_to_pad = (np.array(patch_size) - np.array(final_patch_size)).astype(int)
@@ -83,24 +81,95 @@ class nnUNetDataLoader(DataLoader):
         data, seg, seg_prev, properties,seg2 = self._data.load_case(self._data.identifiers[0])
         num_color_channels = data.shape[0]
 
-        data_shape = (self.batch_size, num_color_channels, *self.target_size)
+        data_shape = (self.batch_size, num_color_channels, *self.patch_size)
         channels_seg = seg.shape[0]
         if seg_prev is not None:
             channels_seg += 1
-        seg_shape = (self.batch_size, channels_seg, *self.target_size)
+        seg_shape = (self.batch_size, channels_seg, *self.patch_size)
         return data_shape, seg_shape
+
+    def get_bbox(self, data_shape: np.ndarray, force_fg: bool, class_locations: Union[dict, None],
+                 overwrite_class: Union[int, Tuple[int, ...]] = None, verbose: bool = False):
+        # in dataloader 2d we need to select the slice prior to this and also modify the class_locations to only have
+        # locations for the given slice
+        need_to_pad = self.need_to_pad.copy()
+        dim = len(data_shape)
+
+        for d in range(dim):
+            # if case_all_data.shape + need_to_pad is still < patch size we need to pad more! We pad on both sides
+            # always
+            if need_to_pad[d] + data_shape[d] < self.patch_size[d]:
+                need_to_pad[d] = self.patch_size[d] - data_shape[d]
+
+        # we can now choose the bbox from -need_to_pad // 2 to shape - patch_size + need_to_pad // 2. Here we
+        # define what the upper and lower bound can be to then sample form them with np.random.randint
+        lbs = [- need_to_pad[i] // 2 for i in range(dim)]
+        ubs = [data_shape[i] + need_to_pad[i] // 2 + need_to_pad[i] % 2 - self.patch_size[i] for i in range(dim)]
+
+        # if not force_fg then we can just sample the bbox randomly from lb and ub. Else we need to make sure we get
+        # at least one of the foreground classes in the patch
+        if not force_fg and not self.has_ignore:
+            bbox_lbs = [np.random.randint(lbs[i], ubs[i] + 1) for i in range(dim)]
+            # print('I want a random location')
+        else:
+            if not force_fg and self.has_ignore:
+                selected_class = self.annotated_classes_key
+                if len(class_locations[selected_class]) == 0:
+                    # no annotated pixels in this case. Not good. But we can hardly skip it here
+                    warnings.warn('Warning! No annotated pixels in image!')
+                    selected_class = None
+            elif force_fg:
+                assert class_locations is not None, 'if force_fg is set class_locations cannot be None'
+                if overwrite_class is not None:
+                    assert overwrite_class in class_locations.keys(), 'desired class ("overwrite_class") does not ' \
+                                                                      'have class_locations (missing key)'
+                # this saves us a np.unique. Preprocessing already did that for all cases. Neat.
+                # class_locations keys can also be tuple
+                eligible_classes_or_regions = [i for i in class_locations.keys() if len(class_locations[i]) > 0]
+
+                # if we have annotated_classes_key locations and other classes are present, remove the annotated_classes_key from the list
+                # strange formulation needed to circumvent
+                # ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+                tmp = [i == self.annotated_classes_key if isinstance(i, tuple) else False for i in eligible_classes_or_regions]
+                if any(tmp):
+                    if len(eligible_classes_or_regions) > 1:
+                        eligible_classes_or_regions.pop(np.where(tmp)[0][0])
+
+                if len(eligible_classes_or_regions) == 0:
+                    # this only happens if some image does not contain foreground voxels at all
+                    selected_class = None
+                    if verbose:
+                        print('case does not contain any foreground classes')
+                else:
+                    # I hate myself. Future me aint gonna be happy to read this
+                    # 2022_11_25: had to read it today. Wasn't too bad
+                    selected_class = eligible_classes_or_regions[np.random.choice(len(eligible_classes_or_regions))] if \
+                        (overwrite_class is None or (overwrite_class not in eligible_classes_or_regions)) else overwrite_class
+                # print(f'I want to have foreground, selected class: {selected_class}')
+            else:
+                raise RuntimeError('lol what!?')
+
+            if selected_class is not None:
+                voxels_of_that_class = class_locations[selected_class]
+                selected_voxel = voxels_of_that_class[np.random.choice(len(voxels_of_that_class))]
+                # selected voxel is center voxel. Subtract half the patch size to get lower bbox voxel.
+                # Make sure it is within the bounds of lb and ub
+                # i + 1 because we have first dimension 0!
+                bbox_lbs = [max(lbs[i], selected_voxel[i + 1] - self.patch_size[i] // 2) for i in range(dim)]
+            else:
+                # If the image does not contain any foreground classes, we fall back to random cropping
+                bbox_lbs = [np.random.randint(lbs[i], ubs[i] + 1) for i in range(dim)]
+
+        bbox_ubs = [bbox_lbs[i] + self.patch_size[i] for i in range(dim)]
+
+        return bbox_lbs, bbox_ubs
 
     def generate_train_batch(self):
         selected_keys = self.get_indices()
-        
-        # print(f"data shape: {self.data_shape}, seg shape: {self.seg_shape}, batch size: {self.batch_size}")
         # preallocate memory for data and seg
-        # Here they set the patch size [crop with bbox do it for patch size]
         data_all = np.zeros(self.data_shape, dtype=np.float32)
         seg_all = np.zeros(self.seg_shape, dtype=np.int16)
         seg2_all = np.zeros(self.seg_shape, dtype=np.int16)
-        disconnection_map_all = np.zeros(self.seg_shape, dtype=np.int16)
-        
 
         for j, i in enumerate(selected_keys):
             # oversampling foreground will improve stability of model training, especially if many patches are empty
@@ -108,57 +177,39 @@ class nnUNetDataLoader(DataLoader):
             force_fg = self.get_do_oversample(j)
 
             data, seg, seg_prev, properties, seg2 = self._data.load_case(i)
+            print(f'data shape: {data.shape}, seg shape: {seg.shape}, seg2 shape: {seg2.shape}')
 
             # If we are doing the cascade then the segmentation from the previous stage will already have been loaded by
             # self._data.load_case(i) (see nnUNetDataset.load_case)
             shape = data.shape[1:]
-            # print('Shape of data: ', data.shape)
 
-            # bbox_lbs, bbox_ubs = self.get_bbox(shape, force_fg, properties['class_locations'])
-            pad = 20
-            bbox_lbs, bbox_ubs = get_padded_3d_segmentation_box(seg2[0], pad)
-            data_dict = get_padded_3d_square_xy_segmentation_box(seg2[0], self.target_size,pad=pad)
-            scaling_ratio = data_dict['scaling_ratio']
-           
-            scaled_data = resize_data_with_scaling_factor(data, scaling_ratio,order=1)
-            scaled_seg = resize_data_with_scaling_factor(seg, scaling_ratio, order=0)
-            scaled_seg2 = resize_data_with_scaling_factor(seg2, scaling_ratio, order=0)
+            bbox_lbs, bbox_ubs = self.get_bbox(shape, force_fg, properties['class_locations'])
+            bbox = [[i, j] for i, j in zip(bbox_lbs, bbox_ubs)]
+
+            # use ACVL utils for that. Cleaner.
+            data_all[j] = crop_and_pad_nd(data, bbox, 0)
+            seg_cropped = crop_and_pad_nd(seg, bbox, -1)
+            seg2_cropped = crop_and_pad_nd(seg2,bbox, -1)
             
-            padded_target = pad_with_all_directions(scaled_data,data_dict["x_min_pad"],
-                                                        data_dict["y_min_pad"], data_dict["z_min_pad"],
-                                                        data_dict["x_max_pad"], data_dict["y_max_pad"], data_dict["z_max_pad"])
-            padded_seg = pad_with_all_directions(scaled_seg,data_dict["x_min_pad"],
-                                                        data_dict["y_min_pad"], data_dict["z_min_pad"],
-                                                        data_dict["x_max_pad"], data_dict["y_max_pad"], data_dict["z_max_pad"])
-       
-            padded_seg2 = pad_with_all_directions(scaled_seg2,data_dict["x_min_pad"],
-                                                        data_dict["y_min_pad"], data_dict["z_min_pad"],
-                                                        data_dict["x_max_pad"], data_dict["y_max_pad"], data_dict["z_max_pad"])
-           
-            bbox_lbs = data_dict['bbox_min_padded']
-            bbox_ubs = data_dict['bbox_max_padded']
-            
-            data_cropped = crop_with_bbox(padded_target, bbox_lbs, bbox_ubs)
-            seg_cropped = crop_with_bbox(padded_seg, bbox_lbs, bbox_ubs)
-            seg2_cropped = crop_with_bbox(padded_seg2, bbox_lbs, bbox_ubs)
-           
-            del padded_target, padded_seg, padded_seg2, scaled_data, scaled_seg, scaled_seg2
-            
-            data_all[j] = data_cropped
+            if seg_prev is not None:
+                seg_cropped = np.vstack((seg_cropped, crop_and_pad_nd(seg_prev, bbox, -1)[None]))
             seg_all[j] = seg_cropped
             seg2_all[j] = seg2_cropped
+
+        if self.patch_size_was_2d:
+            data_all = data_all[:, :, 0]
+            seg_all = seg_all[:, :, 0]
 
         if self.transforms is not None:
             with torch.no_grad():
                 with threadpool_limits(limits=1, user_api=None):
                     data_all = torch.from_numpy(data_all).float()
                     seg_all = torch.from_numpy(seg_all).to(torch.int16)
-                    seg2_all = torch.from_numpy(seg2_all).float()
-    
+                    seg2_all = torch.from_numpy(seg2_all).to(torch.int16)
                     images = []
                     segs = []
                     seg2s = []
-                    disconnection_maps = []
+                    
                     for b in range(self.batch_size):
                         tmp = self.transforms(
                             **{'image': data_all[b], 
@@ -168,24 +219,18 @@ class nnUNetDataLoader(DataLoader):
                         images.append(tmp['image'])
                         segs.append(tmp['segmentation'])
                         seg2s.append(tmp['segmentation_out_1'])
-                        if 'disconnection_map' in tmp:
-                            disconnection_maps.append(tmp['disconnection_map'])
-                        else:
-                            disconnection_maps.append(torch.zeros_like(tmp['segmentation']))
                         
                     data_all = torch.stack(images)
                     if isinstance(segs[0], list):
                         seg_all = [torch.stack([s[i] for s in segs]) for i in range(len(segs[0]))]
                         seg2_all = [torch.stack([s[i] for s in seg2s]) for i in range(len(seg2s[0]))]
-                        disconnection_map_all = [torch.stack([s[i] for s in disconnection_maps]) for i in range(len(disconnection_maps[0]))]
                     else:
                         seg_all = torch.stack(segs)
                         seg2_all = torch.stack(seg2s)
-                        disconnection_map_all = torch.stack(disconnection_maps)
-                    del segs, images, seg2s, disconnection_maps
-            return {'data': data_all, 'target': seg_all, 'seg': seg2_all, 'disconnection_map': disconnection_map_all, 'keys': selected_keys}
+                    del segs, images, seg2s
+            return {'data': data_all, 'target': seg_all, 'seg': seg2_all, 'keys': selected_keys}
 
-        return {'data': data_all, 'target': seg_all,'seg': seg2_all, 'disconnection_map': disconnection_map_all,  'keys': selected_keys}
+        return {'data': data_all, 'target': seg_all,'seg': seg2_all, 'keys': selected_keys}
 
 
 if __name__ == '__main__':
@@ -193,6 +238,6 @@ if __name__ == '__main__':
     ds = nnUNetDatasetBlosc2(folder)  # this should not load the properties!
     pm = PlansManager(join(folder, os.pardir, 'nnUNetPlans.json'))
     lm = pm.get_label_manager(load_json(join(folder, os.pardir, 'dataset.json')))
-    dl = nnUNetDataLoader(ds, 5, (16, 16, 16), (16, 16, 16), lm,
+    dl = nnUNetPatchDataLoader(ds, 5, (16, 16, 16), (16, 16, 16), lm,
                           0.33, None, None)
     a = next(dl)

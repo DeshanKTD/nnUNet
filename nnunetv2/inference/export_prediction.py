@@ -93,8 +93,9 @@ def export_prediction_from_logits(predicted_array_or_file: Union[np.ndarray, tor
         predicted_array_or_file, plans_manager, configuration_manager, label_manager, properties_dict,
         return_probabilities=save_probabilities, num_threads_torch=num_threads_torch
     )
+    
     del predicted_array_or_file
-
+    
     # save
     if save_probabilities:
         segmentation_final, probabilities_final = ret
