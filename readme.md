@@ -8,6 +8,7 @@ Welcome to the repository for the paper **"Skeleton Recall Loss for Connectivity
 
 ## News/Updates:
 
+- 🥇 **10/25**: Used in the [1st place solution](https://www.kaggle.com/competitions/rsna-intracranial-aneurysm-detection/writeups/1st-place-solution) of the RSNA Intracranial Aneurysm Detection challenge, congrats!
 - 📣 **11/24**: Best of ECCV by Voxel51. [Checkout the recording here!](https://youtu.be/3pPOJuO9bxs)
 - 👨‍🏫 **10/24**: ECCV Poster Presentation
 - 📄 **7/24**: ECCV Acceptance
