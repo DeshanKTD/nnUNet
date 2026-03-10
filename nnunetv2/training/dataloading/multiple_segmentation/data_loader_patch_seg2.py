@@ -177,7 +177,6 @@ class nnUNetDataLoaderPatchWithMultiSeg(DataLoader):
             force_fg = self.get_do_oversample(j)
 
             data, seg, seg_prev, properties, seg2 = self._data.load_case(i)
-            print(f'data shape: {data.shape}, seg shape: {seg.shape}, seg2 shape: {seg2.shape}')
 
             # If we are doing the cascade then the segmentation from the previous stage will already have been loaded by
             # self._data.load_case(i) (see nnUNetDataset.load_case)
@@ -195,7 +194,7 @@ class nnUNetDataLoaderPatchWithMultiSeg(DataLoader):
                 seg_cropped = np.vstack((seg_cropped, crop_and_pad_nd(seg_prev, bbox, -1)[None]))
             seg_all[j] = seg_cropped
             seg2_all[j] = seg2_cropped
-
+            
         if self.patch_size_was_2d:
             data_all = data_all[:, :, 0]
             seg_all = seg_all[:, :, 0]

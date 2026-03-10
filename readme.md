@@ -31,7 +31,8 @@ It is necessary to install the required packages for the additional networks.
     cd nnUNet
     pip install -e .
     ```
-2. Mamba is not yet supported because it requires mamba-ssm, which currently does not support torch==2.6.0 (the latest version).
+2. Addition to this, custom batchgenerators and batchgeneratorsv2 has to installed for some trainers.
+3. Mamba is not yet supported because it requires mamba-ssm, which currently does not support torch==2.6.0 (the latest version).
 
 
 For running the respective commands, visit the nnUNet documenation ([nnUNet documentation](https://github.com/MIC-DKFZ/nnUNet))
