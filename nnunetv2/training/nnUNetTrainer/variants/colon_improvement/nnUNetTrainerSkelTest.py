@@ -5,7 +5,7 @@ from nnunetv2.evaluation.evaluate_predictions import compute_metrics_on_folder
 from nnunetv2.inference.export_prediction import export_prediction_from_logits, resample_and_save
 from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor
 from nnunetv2.training.dataloading.multiple_segmentation.data_loader_patch_seg2 import nnUNetDataLoaderPatchWithMultiSeg
-from nnunetv2.training.dataloading.multiple_segmentation.nnunet_dataset_seg2 import infer_dataset_class
+from nnunetv2.training.dataloading.multiple_segmentation.nnunet_dataset_seg2 import infer_dataset_class, nnUNetDatasetBlosc2MultiSeg
 from nnunetv2.training.loss.compound_losses import DC_and_CE_loss
 from nnunetv2.training.lr_scheduler.polylr import PolyLRScheduler
 from nnunetv2.training.nnUNetTrainer.variants.network_architecture.nnUNetTrainerNoDeepSupervision import nnUNetTrainerNoDeepSupervision
@@ -71,10 +71,15 @@ class nnUNetTrainerSkelTest(nnUNetTrainerNoDeepSupervision):
         model = SEUNet3D(in_channels=2, out_channels=num_output_channels,feature_channels=[8,16,32,64])
         return model
     
+    def get_tr_and_val_datasets(self):
+        dataset_tr = nnUNetDatasetBlosc2MultiSeg(self.preprocessed_dataset_folder, self.tr_keys,
+                                  folder_with_segs_from_previous_stage=self.folder_with_segs_from_previous_stage)
+        dataset_val = nnUNetDatasetBlosc2MultiSeg(self.preprocessed_dataset_folder, self.val_keys,
+                                   folder_with_segs_from_previous_stage=self.folder_with_segs_from_previous_stage)
+        return dataset_tr, dataset_val
+    
     
     def get_dataloaders(self):
-        if self.dataset_class is None:
-            self.dataset_class = infer_dataset_class(self.preprocessed_dataset_folder)
 
         # we use the patch size to determine whether we need 2D or 3D dataloaders. We also use it to determine whether
         # we need to use dummy 2D augmentation (in case of 3D training) and what our initial patch size should be
