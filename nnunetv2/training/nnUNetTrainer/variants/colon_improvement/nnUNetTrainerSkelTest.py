@@ -72,9 +72,12 @@ class nnUNetTrainerSkelTest(nnUNetTrainerNoDeepSupervision):
         return model
     
     def get_tr_and_val_datasets(self):
-        dataset_tr = nnUNetDatasetBlosc2MultiSeg(self.preprocessed_dataset_folder, self.tr_keys,
+        
+        tr_keys, val_keys = self.do_split()
+        
+        dataset_tr = nnUNetDatasetBlosc2MultiSeg(self.preprocessed_dataset_folder, tr_keys,
                                   folder_with_segs_from_previous_stage=self.folder_with_segs_from_previous_stage)
-        dataset_val = nnUNetDatasetBlosc2MultiSeg(self.preprocessed_dataset_folder, self.val_keys,
+        dataset_val = nnUNetDatasetBlosc2MultiSeg(self.preprocessed_dataset_folder, val_keys,
                                    folder_with_segs_from_previous_stage=self.folder_with_segs_from_previous_stage)
         return dataset_tr, dataset_val
     
