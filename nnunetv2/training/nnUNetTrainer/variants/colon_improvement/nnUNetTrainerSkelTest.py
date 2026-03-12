@@ -286,7 +286,7 @@ class nnUNetTrainerSkelTest(nnUNetTrainerNoDeepSupervision):
                 # we cannot just have barriers all over the place because the number of keys each GPU receives can be
                 # different
 
-            dataset_val = self.dataset_class(self.preprocessed_dataset_folder, val_keys,
+            dataset_val = nnUNetDatasetBlosc2MultiSeg(self.preprocessed_dataset_folder, val_keys,
                                              folder_with_segs_from_previous_stage=self.folder_with_segs_from_previous_stage)
 
             next_stages = self.configuration_manager.next_stage_names
@@ -403,22 +403,22 @@ class nnUNetTrainerSkelTest(nnUNetTrainerNoDeepSupervision):
     def run_training(self):
         self.on_train_start()
 
-        for epoch in range(self.current_epoch, self.num_epochs):
-            self.on_epoch_start()
+        # for epoch in range(self.current_epoch, self.num_epochs):
+        #     self.on_epoch_start()
 
-            self.on_train_epoch_start()
-            train_outputs = []
-            for batch_id in range(self.num_iterations_per_epoch):
-                train_outputs.append(self.train_step(next(self.dataloader_train)))
-            self.on_train_epoch_end(train_outputs)
+        #     self.on_train_epoch_start()
+        #     train_outputs = []
+        #     for batch_id in range(self.num_iterations_per_epoch):
+        #         train_outputs.append(self.train_step(next(self.dataloader_train)))
+        #     self.on_train_epoch_end(train_outputs)
 
-            with torch.no_grad():
-                self.on_validation_epoch_start()
-                val_outputs = []
-                for batch_id in range(self.num_val_iterations_per_epoch):
-                    val_outputs.append(self.validation_step(next(self.dataloader_val)))
-                self.on_validation_epoch_end(val_outputs)
+        #     with torch.no_grad():
+        #         self.on_validation_epoch_start()
+        #         val_outputs = []
+        #         for batch_id in range(self.num_val_iterations_per_epoch):
+        #             val_outputs.append(self.validation_step(next(self.dataloader_val)))
+        #         self.on_validation_epoch_end(val_outputs)
 
-            self.on_epoch_end()
+        #     self.on_epoch_end()
 
         self.on_train_end()
