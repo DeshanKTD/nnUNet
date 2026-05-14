@@ -1214,6 +1214,8 @@ class nnUNetTrainer(object):
 
     def perform_actual_validation(self, save_probabilities: bool = False):
         self.set_deep_supervision_enabled(False)
+        self.load_checkpoint(join(self.output_folder, 'checkpoint_best.pth'))
+            
         self.network.eval()
 
         if self.is_ddp and self.batch_size == 1 and self.enable_deep_supervision and self._do_i_compile():
