@@ -7,6 +7,7 @@ import blosc2
 import numpy as np
 from acvl_utils.cropping_and_padding.bounding_boxes import bounding_box_to_slice
 from batchgenerators.utilities.file_and_folder_operations import join, isdir, isfile, load_json, maybe_mkdir_p
+from scipy.ndimage import binary_dilation
 from tqdm import tqdm
 
 from nnunetv2.paths import nnUNet_preprocessed, nnUNet_raw
@@ -29,6 +30,20 @@ class SkeletonPreprocessor(DefaultPreprocessor):
     """
     skeleton_folder_name = 'skeletonTr'
     skeleton_suffix = '_seg2'
+    # radius (in raw voxels) of the spherical dilation applied to the skeleton before preprocessing. 0 disables it.
+    skeleton_dilation_radius = 2
+
+    @staticmethod
+    def _dilate(skel: np.ndarray, radius: int) -> np.ndarray:
+        """
+        skel: (C, X, Y, Z) binary. Dilates every channel with a ball of the given radius (in voxels).
+        2D data is read as (C, 1, X, Y); the ball then effectively acts in-plane only.
+        """
+        if radius <= 0:
+            return skel
+        r = np.arange(-radius, radius + 1)
+        ball = (r[:, None, None] ** 2 + r[None, :, None] ** 2 + r[None, None, :] ** 2) <= radius ** 2
+        return np.stack([binary_dilation(c, structure=ball) for c in skel]).astype(skel.dtype)
 
     def run_case_npy(self, data: np.ndarray, seg: Union[np.ndarray, None], properties: dict,
                      plans_manager: PlansManager, configuration_manager: ConfigurationManager,
@@ -39,6 +54,9 @@ class SkeletonPreprocessor(DefaultPreprocessor):
             return data, seg, properties
 
         skel = (np.asarray(skel) > 0).astype(np.int8)  # binarize: loader expects skeleton == 1
+
+        # thicken the 1-voxel line so it survives resampling without gaps (done in raw voxel space)
+        skel = self._dilate(skel, self.skeleton_dilation_radius)
 
         # transpose (same as parent)
         skel = skel.transpose([0, *[i + 1 for i in plans_manager.transpose_forward]])
