@@ -35,7 +35,11 @@ class nnUNetTrainerSkelFullVol(nnUNetTrainerSkelTest):
 
     Each case is cropped to the bounding box of the skeleton (+ self.fullvol_pad voxels), isotropically scaled to fit
     self.fullvol_target_size and padded/cropped to exactly that size (nnUNetDataLoaderFullVolumeWithMultiSeg).
-    Validation applies the same crop/scale, predicts in one forward pass and maps the prediction back.
+    Validation applies the same crop/scale, predicts in one forward pass and maps the prediction back. Since only the
+    skeleton decides the region, the same pipeline works at test time (no target needed).
+
+    self.fullvol_box_source = 'target' crops around the ground truth instead (validation Dice then assumes the colon
+    region is known, so it is not usable at test time).
 
     Network, optimizer, loss, train_step and validation_step are inherited from nnUNetTrainerSkelTest.
     """
@@ -44,8 +48,10 @@ class nnUNetTrainerSkelFullVol(nnUNetTrainerSkelTest):
                  device: torch.device = torch.device('cuda')):
         super().__init__(plans, configuration, fold, dataset_json, device)
         self.fullvol_target_size = (128, 128, 192)
-        # margin around the skeleton bounding box (in preprocessed voxels, before scaling). The skeleton is the
-        # centreline, so this must be at least the max colon radius or the colon wall gets cut off.
+        # which mask defines the crop box: 'seg2' (skeleton) or 'target' (colon ground truth)
+        self.fullvol_box_source = 'seg2'
+        # margin around the box (in preprocessed voxels, before scaling). The skeleton is the centreline, so this
+        # must be at least the max colon radius or the colon wall gets cut off.
         self.fullvol_pad = 20
 
     # ---------------------------------------------------------------- augmentation
@@ -105,7 +111,8 @@ class nnUNetTrainerSkelFullVol(nnUNetTrainerSkelTest):
         dl_kwargs = dict(label_manager=self.label_manager, sampling_probabilities=None, pad_sides=None,
                          oversample_foreground_percent=self.oversample_foreground_percent,
                          probabilistic_oversampling=self.probabilistic_oversampling,
-                         target_size=self.fullvol_target_size, pad=self.fullvol_pad)
+                         target_size=self.fullvol_target_size, pad=self.fullvol_pad,
+                         box_source=self.fullvol_box_source)
         dl_tr = nnUNetDataLoaderFullVolumeWithMultiSeg(dataset_tr, self.batch_size, patch_size, patch_size,
                                                        transforms=tr_transforms, **dl_kwargs)
         dl_val = nnUNetDataLoaderFullVolumeWithMultiSeg(dataset_val, self.batch_size, patch_size, patch_size,
@@ -135,16 +142,17 @@ class nnUNetTrainerSkelFullVol(nnUNetTrainerSkelTest):
 
     # ---------------------------------------------------------------- full-volume inference
     @torch.no_grad()
-    def predict_full_volume(self, data: np.ndarray, skel: np.ndarray) -> torch.Tensor:
+    def predict_full_volume(self, data: np.ndarray, skel: np.ndarray, box_mask: np.ndarray) -> torch.Tensor:
         """
-        data: (C, X, Y, Z) preprocessed image, skel: (1, X, Y, Z) preprocessed skeleton.
+        data: (C, X, Y, Z) preprocessed image, skel: (1, X, Y, Z) preprocessed skeleton,
+        box_mask: (X, Y, Z) mask whose bounding box defines the region to predict.
         Returns logits (num_classes, X, Y, Z) in the preprocessed image space.
         Same crop/scale/pad as nnUNetDataLoaderFullVolumeWithMultiSeg, then inverted.
         """
         original_shape = data.shape[1:]
-        box = get_padded_3d_square_xy_segmentation_box(skel[0], self.fullvol_target_size, self.fullvol_pad)
+        box = get_padded_3d_square_xy_segmentation_box(box_mask, self.fullvol_target_size, self.fullvol_pad)
         if box is None:
-            raise RuntimeError('Empty skeleton, cannot determine the region to predict')
+            raise RuntimeError('Empty box mask, cannot determine the region to predict')
         pads = (box["x_min_pad"], box["y_min_pad"], box["z_min_pad"],
                 box["x_max_pad"], box["y_max_pad"], box["z_max_pad"])
         lbs, ubs = box['bbox_min_padded'], box['bbox_max_padded']
@@ -192,11 +200,12 @@ class nnUNetTrainerSkelFullVol(nnUNetTrainerSkelTest):
                     sleep(0.1)
 
                 self.print_to_log_file(f"predicting {k}")
-                data, _, _, properties, seg2 = dataset_val.load_case(k)
-                data, skel = data[:], seg2[:]  # blosc2 -> numpy
+                data, seg, _, properties, seg2 = dataset_val.load_case(k)
+                data, seg, skel = data[:], seg[:], seg2[:]  # blosc2 -> numpy
                 self.print_to_log_file(f'{k}, shape {data.shape}, rank {self.local_rank}')
 
-                prediction = self.predict_full_volume(data, skel)
+                box_mask = seg[0] if self.fullvol_box_source == 'target' else skel[0]
+                prediction = self.predict_full_volume(data, skel, box_mask)
 
                 results.append(segmentation_export_pool.starmap_async(
                     export_prediction_from_logits,
