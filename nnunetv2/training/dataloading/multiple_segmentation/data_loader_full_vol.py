@@ -27,10 +27,15 @@ class nnUNetDataLoaderFullVolumeWithMultiSeg(DataLoader):
                  sampling_probabilities: Union[List[int], Tuple[int, ...], np.ndarray] = None,
                  pad_sides: Union[List[int], Tuple[int, ...]] = None,
                  probabilistic_oversampling: bool = False,
-                 transforms=None):
+                 transforms=None,
+                 target_size: Tuple[int, int, int] = (128, 128, 192),
+                 pad: int = 20):
         """
         If we get a 2D patch size, make it pseudo 3D and remember to remove the singleton dimension before
         returning the batch
+
+        target_size: fixed (x, y, z) size every case is scaled/padded/cropped to.
+        pad: margin (voxels, before scaling) added around the seg2 bounding box.
         """
         super().__init__(data, batch_size, 1, None, True,
                          False, True, sampling_probabilities)
@@ -48,7 +53,8 @@ class nnUNetDataLoaderFullVolumeWithMultiSeg(DataLoader):
         self.oversample_foreground_percent = oversample_foreground_percent
         self.final_patch_size = final_patch_size
         self.patch_size = patch_size
-        self.target_size = (128,128,192)
+        self.target_size = tuple(target_size)
+        self.pad = pad
         # need_to_pad denotes by how much we need to pad the data so that if we sample a patch of size final_patch_size
         # (which is what the network will get) these patches will also cover the border of the images
         self.need_to_pad = (np.array(patch_size) - np.array(final_patch_size)).astype(int)
@@ -114,7 +120,7 @@ class nnUNetDataLoaderFullVolumeWithMultiSeg(DataLoader):
             # print('Shape of data: ', data.shape)
 
             # bbox_lbs, bbox_ubs = self.get_bbox(shape, force_fg, properties['class_locations'])
-            pad = 20
+            pad = self.pad
             bbox_lbs, bbox_ubs = get_padded_3d_segmentation_box(seg2[0], pad)
             data_dict = get_padded_3d_square_xy_segmentation_box(seg2[0], self.target_size,pad=pad)
             scaling_ratio = data_dict['scaling_ratio']
